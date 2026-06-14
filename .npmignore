@@ -1,0 +1,11 @@
+# Safety net — `files` in package.json is the source of truth, but this
+# guarantees nothing accidental ships even if `files` is widened later.
+node_modules/
+.git/
+.gitignore
+tsconfig.json
+*.log
+.DS_Store
+tests/
+scripts/
+docs/

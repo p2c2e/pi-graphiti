@@ -1,0 +1,52 @@
+{
+  "name": "pi-graphiti",
+  "version": "0.1.0",
+  "description": "🕸️ Persistent knowledge graph for Pi via Graphiti MCP. Ambient recall, automatic episode writes on session events, /graph command.",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "graphiti",
+    "knowledge-graph",
+    "falkordb",
+    "mcp",
+    "memory",
+    "temporal-graph",
+    "ambient-recall",
+    "agent"
+  ],
+  "author": "Sudharsan Rangarajan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<your-github-username>/pi-graphiti"
+  },
+  "bugs": {
+    "url": "https://github.com/<your-github-username>/pi-graphiti/issues"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-tui": "^0.74.0",
+    "typebox": "^1.1.33",
+    "typescript": "^6.0.3"
+  }
+}
