@@ -5,23 +5,29 @@
  * so the agent doesn't need pi-mcp-adapter to use graphiti. The extension's
  * direct HTTP client handles transport.
  *
- * Tool is only registered when the backend is non-null (i.e. config.graphBackend
- * === "graphiti").
+ * Tool is only registered when the backend is non-null (config.enabled).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { GraphitiBackend } from "./backend.js";
+import type { GraphScope } from "./types.js";
 
 const TOOL_DESCRIPTION = `Read and write the persistent knowledge graph (graphiti).
 
 Use this when the current task may benefit from cross-session relational or temporal context (entities, relationships, who-knows-what-about-what, when something changed).
 
 ACTIONS:
-- 'add': persist a new episode. Required: content. Optional: name (short label), source ("text" | "message" | "json", default "text"). Graphiti extracts entities/facts asynchronously, so a just-added episode may not be searchable for tens of seconds.
-- 'search': find entities AND facts matching a query string. Required: query. Optional: limit (default 5). Returns nodes and facts from the configured group.
-- 'episodes': list the most recent episodes in the group. Optional: limit (default 5).
+- 'add': persist a new episode. Required: content. Optional: name (short label), source ("text" | "message" | "json", default "text"), scope ("project" | "global", default "project"). Graphiti extracts entities/facts asynchronously, so a just-added episode may not be searchable for tens of seconds.
+- 'search': find entities AND facts matching a query string. Required: query. Optional: limit (default 5), scope ("project" | "global" | "both", default "both"). Returns nodes and facts.
+- 'episodes': list the most recent episodes. Optional: limit (default 5), scope ("project" | "global", default "project").
+
+SCOPE:
+- Graph memory is split into a per-project group and a shared global group (like project vs. global notes). Scoping is on by default; when disabled all ops use a single bucket and scope is ignored.
+- 'project' = facts specific to the current project/codebase. 'global' = cross-project knowledge, preferences, durable facts. 'both' (search only) = union of project + global.
+- Default 'add' to 'project' for project-specific findings; use 'global' for things that should follow the user everywhere (preferences, identity, cross-project conventions).
+- Default 'search' to 'both' so you recall project AND global context in one call.
 
 WHEN TO USE:
 - Use 'add' at the end of significant work (decisions, fixes, preferences, environment facts) for relational/temporal recall later.
@@ -64,6 +70,12 @@ export function registerGraphitiTool(
       limit: Type.Optional(
         Type.Number({ description: "Max results (default 5)" }),
       ),
+      scope: Type.Optional(
+        StringEnum(["project", "global", "both"] as const, {
+          description:
+            "Which graph group to target. add/episodes: 'project' (default) or 'global'. search: 'both' (default), 'project', or 'global'.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const { action } = params;
@@ -84,11 +96,13 @@ export function registerGraphitiTool(
           }
           const name = (params.name ?? defaultEpisodeName(content)).slice(0, 80);
           const source = params.source ?? "text";
-          await backend.addEpisode({ name, body: content, source });
+          const scope: GraphScope = params.scope === "global" ? "global" : "project";
+          await backend.addEpisode({ name, body: content, source, scope });
           return resultText({
             success: true,
             message: `Episode queued. Extraction is async; entities/facts may not be searchable immediately.`,
-            group_id: backend.options.groupId,
+            group_id: backend.writeGroupId(scope),
+            scope,
             name,
           });
         }
@@ -99,27 +113,62 @@ export function registerGraphitiTool(
             return resultText({ success: false, error: "query is required for action='search'" });
           }
           const limit = clampLimit(params.limit);
+          const searchScope: GraphScope =
+            params.scope === "project" || params.scope === "global" ? params.scope : "both";
           const [nodes, facts] = await Promise.all([
-            backend.searchNodes(query, limit),
-            backend.searchFacts(query, limit),
+            backend.searchNodes(query, limit, searchScope),
+            backend.searchFacts(query, limit, searchScope),
           ]);
-          return resultText({
-            success: true,
-            group_id: backend.options.groupId,
-            query,
-            entities: nodes.map((n) => ({ label: n.label, uuid: n.uuid, summary: n.summary })),
-            facts: facts.map((f) => ({ label: f.label, uuid: f.uuid, summary: f.summary })),
+          // Project to compact text to minimize context tokens:
+          //  - drop UUIDs (the agent has no uuid-based follow-up action;
+          //    they're kept out of `content` and stashed in `details` instead)
+          //  - collapse facts to plain strings (label === summary upstream)
+          //  - strip entity-summary sentences that already appear as standalone
+          //    facts, to kill cross-array duplication
+          const factStrings = facts
+            .map((f) => (f.summary || f.label || "").trim())
+            .filter(Boolean);
+          const factSet = new Set(factStrings);
+          const entityStrings = nodes.map((n) => {
+            const summary = (n.summary || "")
+              .split("\n")
+              .map((s) => s.trim())
+              .filter((s) => s && !factSet.has(s))
+              .join(" ");
+            return summary ? `${n.label}: ${summary}` : n.label;
           });
+          return resultText(
+            {
+              success: true,
+              scope: searchScope,
+              groups: backend.readGroupIds(searchScope),
+              query,
+              entities: entityStrings,
+              facts: factStrings,
+            },
+            {
+              // uuids retained off-context for the UI / future traversal
+              entityUuids: nodes.map((n) => ({ label: n.label, uuid: n.uuid })),
+              factUuids: facts.map((f) => ({ label: f.label, uuid: f.uuid })),
+            },
+          );
         }
 
         if (action === "episodes") {
           const limit = clampLimit(params.limit);
-          const episodes = await backend.getEpisodes(limit);
-          return resultText({
-            success: true,
-            group_id: backend.options.groupId,
-            episodes: episodes.map((e) => ({ label: e.label, uuid: e.uuid, summary: e.summary })),
-          });
+          const epScope: GraphScope = params.scope === "global" ? "global" : "project";
+          const episodes = await backend.getEpisodes(limit, epScope);
+          return resultText(
+            {
+              success: true,
+              scope: epScope,
+              group_id: backend.writeGroupId(epScope),
+              episodes: episodes.map((e) => (e.summary ? `${e.label}: ${e.summary}` : e.label)),
+            },
+            {
+              episodeUuids: episodes.map((e) => ({ label: e.label, uuid: e.uuid })),
+            },
+          );
         }
 
         return resultText({ success: false, error: `unknown action: ${String(action)}` });
@@ -130,10 +179,10 @@ export function registerGraphitiTool(
   });
 }
 
-function resultText(payload: unknown) {
+function resultText(payload: unknown, details: Record<string, unknown> = {}) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    details: {},
+    details,
   };
 }
 

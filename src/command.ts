@@ -1,21 +1,26 @@
 /**
- * `/memory-graph` command — inspect & manage the graphiti backend.
+ * `/graph` command — inspect & manage the graphiti backend.
  *
  * Usage (typed at the pi prompt):
- *   /memory-graph              status + recent episodes + group_id
- *   /memory-graph search QUERY search_nodes + search_memory_facts
- *   /memory-graph clear        clear_graph for the configured group id (destructive)
+ *   /graph              status + recent episodes + group_id
+ *   /graph search QUERY search_nodes + search_memory_facts
+ *   /graph dump [path]  export ALL episodes (every group) to a markdown file;
+ *                       use before reverting to flat-file memory
+ *   /graph clear        clear_graph for the configured group id (destructive)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { GraphitiBackend } from "./backend.js";
+import { agentRoot } from "./project.js";
 
 export function registerGraphitiCommand(
   pi: ExtensionAPI,
   backend: GraphitiBackend | null,
 ): void {
   pi.registerCommand("graph", {
-    description: "Show graphiti backend status, recent episodes, or search the graph",
+    description: "Show graphiti backend status, search the graph, dump all episodes, or clear",
     handler: async (args, ctx) => {
       if (!backend) {
         ctx.ui.notify(
@@ -43,6 +48,68 @@ export function registerGraphitiCommand(
           ctx.ui.notify(`Cleared graphiti group_id="${backend.options.groupId}".`, "info");
         } catch (err) {
           ctx.ui.notify(`clear_graph failed: ${(err as Error).message}`, "error");
+        }
+        return;
+      }
+
+      if (sub === "dump") {
+        const status = await backend.getStatus(true);
+        if (!status.available) {
+          ctx.ui.notify(`Graphiti unavailable: ${status.message}`, "error");
+          return;
+        }
+        // Optional explicit output path; otherwise timestamped file under the agent root.
+        const explicit = argv.slice(1).join(" ").trim();
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        const outPath = explicit
+          ? path.resolve(explicit.replace(/^~(?=$|\/)/, process.env.HOME || "~"))
+          : path.join(agentRoot(), `graphiti-dump-${ts}.md`);
+        try {
+          const groups = await backend.dumpAllEpisodes();
+          const lines: string[] = [];
+          let total = 0;
+          lines.push(`# Graphiti episode dump`);
+          lines.push(`# generated: ${new Date().toISOString()}`);
+          lines.push(`# url: ${backend.options.url}`);
+          lines.push("");
+          lines.push("These are the raw episodes (source text) the extension pushed to the");
+          lines.push("knowledge graph. Entities/facts are LLM-derived from these, so episodes");
+          lines.push("are the faithful export when reverting to flat-file memory only.");
+          lines.push("");
+          for (const g of groups) {
+            lines.push(`## group_id: ${g.groupId}  (${g.episodes.length} episodes)`);
+            lines.push("");
+            if (g.episodes.length === 0) {
+              lines.push("_(none)_");
+              lines.push("");
+              continue;
+            }
+            for (const ep of g.episodes) {
+              total++;
+              const when = pickField(ep.raw, ["created_at", "createdAt", "valid_at", "reference_time", "timestamp"]);
+              lines.push(`### ${ep.label}${when ? `  (${when})` : ""}`);
+              if (ep.uuid) lines.push(`<!-- uuid: ${ep.uuid} -->`);
+              lines.push("");
+              lines.push(ep.summary ? ep.summary.trim() : "_(empty body)_");
+              lines.push("");
+            }
+          }
+          fs.mkdirSync(path.dirname(outPath), { recursive: true });
+          fs.writeFileSync(outPath, lines.join("\n"), "utf-8");
+          ctx.ui.notify(
+            [
+              `Dumped ${total} episode(s) across ${groups.length} group(s) to:`,
+              `  ${outPath}`,
+              "",
+              "To revert to flat-file memory only:",
+              "  1. Review/edit the dump and fold useful content into your flat memory.",
+              '  2. Set "enabled": false in ~/.pi/agent/pi-graphiti-config.json (or PI_GRAPHITI_ENABLED=0).',
+              "  3. (Optional) /graph clear to wipe the graph.",
+            ].join("\n"),
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.notify(`dump failed: ${(err as Error).message}`, "error");
         }
         return;
       }
@@ -86,6 +153,9 @@ export function registerGraphitiCommand(
       const lines: string[] = [];
       lines.push(`URL:      ${backend.options.url}`);
       lines.push(`Group:    ${backend.options.groupId}`);
+      if (backend.options.projectScoping && backend.options.projectGroupId) {
+        lines.push(`Project:  ${backend.options.projectGroupId}`);
+      }
       lines.push(`Status:   ${status.available ? "ok" : "unavailable"}`);
       if (status.backend) lines.push(`Backend:  ${status.backend}`);
       if (!status.available) {
@@ -108,8 +178,17 @@ export function registerGraphitiCommand(
         lines.push(`get_episodes failed: ${(err as Error).message}`);
       }
       lines.push("");
-      lines.push("Subcommands: /graph search QUERY  |  /graph clear");
+      lines.push("Subcommands: /graph search QUERY  |  /graph dump [path]  |  /graph clear");
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
+}
+
+/** Best-effort string field lookup over a raw graphiti object. */
+function pickField(obj: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
 }

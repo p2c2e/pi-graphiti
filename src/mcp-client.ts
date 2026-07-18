@@ -9,13 +9,12 @@
  * Responses arrive as Server-Sent-Event frames (`data: { ...jsonrpc }`).
  * We parse the first `result` (or `error`) frame and return it.
  *
- * Verified against Graphiti Agent Memory v1.26.0 at http://localhost:8431/mcp/
- * (see scripts/test-graphiti-mcp.sh).
+ * Verified against Graphiti Agent Memory v1.26.0 (FalkorDB-backed).
  */
 
 const ACCEPT = "application/json, text/event-stream";
 const PROTOCOL_VERSION = "2024-11-05";
-const CLIENT_INFO = { name: "pi-hermes-memory", version: "0.7.x" };
+const CLIENT_INFO = { name: "pi-graphiti", version: "0.1.x" };
 
 export interface McpClientOptions {
   url: string;

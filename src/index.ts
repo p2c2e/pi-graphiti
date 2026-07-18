@@ -1,7 +1,7 @@
 /**
  * pi-graphiti — persistent knowledge graph for Pi.
  *
- * Independent of pi-hermes-memory. Provides:
+ * Provides:
  *   - `graph` tool        (add/search/episodes against a graphiti MCP server)
  *   - `/graph` command    (status, search, clear)
  *   - background sync     (push episodes on turn nudge / pre-compaction / shutdown)
@@ -18,6 +18,7 @@ import { registerGraphitiTool } from "./tool.js";
 import { registerGraphitiCommand } from "./command.js";
 import { setupGraphitiSync } from "./sync.js";
 import { buildGraphitiInjection } from "./context.js";
+import { detectProjectName } from "./project.js";
 import { getMessageText } from "./types.js";
 
 const GRAPHITI_POLICY_PROMPT = `<graphiti-knowledge-graph>
@@ -35,7 +36,8 @@ Guidance:
 
 export default function init(pi: ExtensionAPI): void {
   const config = loadConfig();
-  const backend = buildGraphitiBackend(config);
+  const projectName = detectProjectName();
+  const backend = buildGraphitiBackend(config, projectName);
 
   // Command is always registered so /graph prints helpful guidance even when disabled.
   registerGraphitiCommand(pi, backend);

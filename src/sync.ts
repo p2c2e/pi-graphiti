@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { GraphitiBackend } from "./backend.js";
 import type { GraphitiConfig } from "./types.js";
 import { collectMessageParts } from "./message-parts.js";
+import { runGraphitiReview } from "./review.js";
 
 const MAX_EPISODE_BODY_CHARS = 8000;
 const EPISODE_NAME_MAX = 80;
@@ -37,6 +38,12 @@ export function setupGraphitiSync(
 
   // Push on the same cadence as background-review (turn-based nudge),
   // independent of the flat-memory review subprocess. We piggyback on turn_end.
+  //
+  // When config.reviewEnabled (default), the nudge runs an LLM curation pass
+  // (child `pi -p`) that decides WHAT to persist and at WHICH scope by calling
+  // the `graph` tool itself. When disabled, it falls back to pushing a raw
+  // conversation snapshot (all project scope) and leans on graphiti's
+  // server-side extraction.
   pi.on("turn_end", async (_event, ctx) => {
     if (pushInProgress) return;
     if (userTurnsSinceReview < config.nudgeInterval) return;
@@ -44,7 +51,11 @@ export function setupGraphitiSync(
     userTurnsSinceReview = 0;
     pushInProgress = true;
 
-    pushSnapshot(ctx, backend, config, "nudge")
+    const work = config.reviewEnabled
+      ? runReview(pi, ctx, backend, config).then(() => {})
+      : pushSnapshot(ctx, backend, config, "nudge");
+
+    work
       .catch(() => {})
       .finally(() => { pushInProgress = false; });
   });
@@ -61,6 +72,19 @@ export function setupGraphitiSync(
     // fire-and-forget — never block shutdown
     pushSnapshot(ctx, backend, config, "shutdown").catch(() => {});
   });
+}
+
+async function runReview(
+  pi: ExtensionAPI,
+  ctx: any,
+  backend: GraphitiBackend,
+  config: GraphitiConfig,
+): Promise<void> {
+  // Cheap reachability gate first — if graphiti is down there's no point
+  // spending a child-LLM call whose `graph add` writes would just fail.
+  const status = await backend.getStatus();
+  if (!status.available) return;
+  await runGraphitiReview(pi, ctx, config);
 }
 
 async function pushSnapshot(

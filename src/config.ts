@@ -82,6 +82,10 @@ export function loadConfig(): GraphitiConfig {
       "PI_GRAPHITI_TIMEOUT_MS",
       pick<number>(file.toolTimeoutMs, DEFAULT_TOOL_TIMEOUT_MS),
     ),
+    projectScoping: envBool(
+      "PI_GRAPHITI_PROJECT_SCOPING",
+      pick<boolean>(file.projectScoping, true),
+    ),
     injectContext: envBool(
       "PI_GRAPHITI_INJECT_CONTEXT",
       pick<boolean>(file.injectContext, false),
@@ -110,5 +114,21 @@ export function loadConfig(): GraphitiConfig {
       "PI_GRAPHITI_FLUSH_RECENT",
       pick<number>(file.flushRecentMessages, 0),
     ),
+    reviewEnabled: envBool(
+      "PI_GRAPHITI_REVIEW_ENABLED",
+      pick<boolean>(file.reviewEnabled, true),
+    ),
+    reviewRecentMessages: envInt(
+      "PI_GRAPHITI_REVIEW_RECENT",
+      pick<number>(file.reviewRecentMessages, 0),
+    ),
+    llmModelOverride: envStr(
+      "PI_GRAPHITI_LLM_MODEL",
+      pick<string>(file.llmModelOverride, ""),
+    ) || undefined,
+    llmThinkingOverride: envStr(
+      "PI_GRAPHITI_LLM_THINKING",
+      pick<string>(file.llmThinkingOverride, ""),
+    ) || undefined,
   };
 }

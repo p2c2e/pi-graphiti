@@ -1,6 +1,6 @@
 /**
  * Collect [USER]/[ASSISTANT] text parts from a pi session branch.
- * Self-contained — no dependency on pi-hermes-memory.
+ * Self-contained.
  */
 
 import { getMessageText } from "./types.js";
