@@ -11,7 +11,6 @@
  *     host agent keeps working without graphiti.
  */
 
-import * as os from "node:os";
 import { GraphitiMcpClient, McpClientError, type McpToolCallResult } from "./mcp-client.js";
 import type { GraphitiConfig, GraphScope } from "./types.js";
 
@@ -72,12 +71,14 @@ export function hasSearchableTerms(query: string | undefined | null): boolean {
 }
 
 export function defaultGroupId(): string {
-  // pigraphiti + sanitized username + sanitized hostname.
+  // pigraphiti + sanitized username only. The hostname is intentionally NOT
+  // included: os.hostname() often returns an ephemeral IP-derived name (e.g.
+  // `ip-192-168-1-177.ec2.internal` under VPN/DHCP), which would silently
+  // change the base group id and orphan existing memory when the IP is
+  // reassigned. For per-machine isolation, set `groupId` explicitly in
+  // ~/.pi/agent/pi-graphiti-config.json (or PI_GRAPHITI_GROUP_ID).
   const user = process.env.USER || process.env.USERNAME || "user";
-  const host = (() => {
-    try { return os.hostname(); } catch { return "host"; }
-  })();
-  const tail = `${user}${host}`.replace(/[^A-Za-z0-9_]/g, "");
+  const tail = user.replace(/[^A-Za-z0-9_]/g, "");
   return `pigraphiti${tail || "default"}`.slice(0, 64);
 }
 
