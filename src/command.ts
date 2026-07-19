@@ -6,6 +6,8 @@
  *   /graph search QUERY search_nodes + search_memory_facts
  *   /graph dump [path]  export ALL episodes (every group) to a markdown file;
  *                       use before reverting to flat-file memory
+ *   /graph load <path>  re-import episodes from a dump file back into the graph
+ *                       (into their original group ids)
  *   /graph clear        clear_graph for the configured group id (destructive)
  */
 
@@ -114,6 +116,67 @@ export function registerGraphitiCommand(
         return;
       }
 
+      if (sub === "load") {
+        const explicit = argv.slice(1).join(" ").trim();
+        if (!explicit) {
+          ctx.ui.notify("Usage: /graph load <path>", "warning");
+          return;
+        }
+        const inPath = path.resolve(explicit.replace(/^~(?=$|\/)/, process.env.HOME || "~"));
+        if (!fs.existsSync(inPath)) {
+          ctx.ui.notify(`load failed: file not found: ${inPath}`, "error");
+          return;
+        }
+        const status = await backend.getStatus(true);
+        if (!status.available) {
+          ctx.ui.notify(`Graphiti unavailable: ${status.message}`, "error");
+          return;
+        }
+        try {
+          const text = fs.readFileSync(inPath, "utf-8");
+          const parsed = parseDump(text);
+          if (parsed.length === 0) {
+            ctx.ui.notify(
+              `No episodes found in ${inPath}. Expected a /graph dump markdown file.`,
+              "warning",
+            );
+            return;
+          }
+          let ok = 0;
+          let fail = 0;
+          const groupCount = new Set<string>();
+          for (const ep of parsed) {
+            groupCount.add(ep.groupId);
+            try {
+              await backend.addEpisodeToGroup({
+                name: ep.name,
+                body: ep.body,
+                groupId: ep.groupId,
+                sourceDescription: `graph load from ${path.basename(inPath)}`,
+              });
+              ok++;
+            } catch {
+              fail++;
+            }
+          }
+          ctx.ui.notify(
+            [
+              `Loaded ${ok} episode(s) across ${groupCount.size} group(s) from:`,
+              `  ${inPath}`,
+              fail > 0 ? `  (${fail} failed to import)` : "",
+              "",
+              "Episodes are re-queued for async entity/fact extraction; the graph",
+              "may take 30-90s to reflect them. Note: re-loading a dump creates NEW",
+              "episodes; clear the group first if you want a clean restore.",
+            ].filter(Boolean).join("\n"),
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.notify(`load failed: ${(err as Error).message}`, "error");
+        }
+        return;
+      }
+
       if (sub === "search") {
         const query = argv.slice(1).join(" ").trim();
         if (!query) {
@@ -178,7 +241,7 @@ export function registerGraphitiCommand(
         lines.push(`get_episodes failed: ${(err as Error).message}`);
       }
       lines.push("");
-      lines.push("Subcommands: /graph search QUERY  |  /graph dump [path]  |  /graph clear");
+      lines.push("Subcommands: /graph search QUERY  |  /graph dump [path]  |  /graph load <path>  |  /graph clear");
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
@@ -191,4 +254,62 @@ function pickField(obj: Record<string, unknown>, keys: string[]): string | undef
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return undefined;
+}
+
+interface ParsedEpisode {
+  groupId: string;
+  name: string;
+  body: string;
+}
+
+/**
+ * Parse a `/graph dump` markdown file back into episodes. Mirrors the writer in
+ * the dump handler:
+ *   ## group_id: <id>  (N episodes)
+ *   ### <label>  (<when>)
+ *   <!-- uuid: <uuid> -->
+ *   <body lines...>
+ * The body runs until the next `### ` or `## group_id:` header (or EOF). The
+ * uuid comment and the trailing `(<when>)` on the label are metadata we drop;
+ * add_memory assigns fresh uuids/timestamps on import. Empty-body placeholders
+ * emitted by the dumper are skipped.
+ */
+export function parseDump(text: string): ParsedEpisode[] {
+  const lines = text.split(/\r?\n/);
+  const episodes: ParsedEpisode[] = [];
+  let groupId: string | null = null;
+  let name: string | null = null;
+  let bodyLines: string[] = [];
+
+  const flush = () => {
+    if (name !== null && groupId) {
+      const body = bodyLines.join("\n").trim();
+      if (body && body !== "_(empty body)_") {
+        episodes.push({ groupId, name, body });
+      }
+    }
+    name = null;
+    bodyLines = [];
+  };
+
+  for (const line of lines) {
+    const groupMatch = /^##\s+group_id:\s*(.+?)\s*(?:\(\d+\s+episodes?\))?\s*$/.exec(line);
+    if (groupMatch) {
+      flush();
+      groupId = groupMatch[1].trim();
+      continue;
+    }
+    const epMatch = /^###\s+(.*)$/.exec(line);
+    if (epMatch) {
+      flush();
+      // Strip a trailing "  (timestamp)" suffix appended by the dumper.
+      name = epMatch[1].replace(/\s+\([^()]*\)\s*$/, "").trim() || epMatch[1].trim();
+      continue;
+    }
+    if (name === null) continue; // skip file header / preamble
+    if (/^<!--\s*uuid:.*-->\s*$/.test(line)) continue; // drop uuid metadata
+    bodyLines.push(line);
+  }
+  flush();
+  return episodes;
 }

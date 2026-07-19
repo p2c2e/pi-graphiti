@@ -213,6 +213,27 @@ export class GraphitiBackend {
     });
   }
 
+  /**
+   * Add an episode into an EXPLICIT group id (bypasses scope->group mapping).
+   * Used by the load/import path so episodes are restored into the very group
+   * they were dumped from, regardless of the current project scope.
+   */
+  async addEpisodeToGroup(args: {
+    name: string;
+    body: string;
+    groupId: string;
+    source?: "text" | "message" | "json";
+    sourceDescription?: string;
+  }): Promise<McpToolCallResult> {
+    return this.client.callTool("add_memory", {
+      name: args.name,
+      episode_body: args.body,
+      group_id: args.groupId,
+      source: args.source ?? "text",
+      ...(args.sourceDescription ? { source_description: args.sourceDescription } : {}),
+    });
+  }
+
   async searchNodes(query: string, maxNodes = 5, scope: GraphScope = "both"): Promise<GraphitiSearchHit[]> {
     if (!hasSearchableTerms(query)) return [];
     const res = await this.client.callTool("search_nodes", {

@@ -12,7 +12,7 @@ The Graphiti MCP server is just an MCP — if you `pi mcp add` it, the LLM gets 
 - **System-prompt policy block** — every session starts knowing the graph exists and when to use it.
 - **Optional ambient recall** — opt-in injection of relevant entities/facts at session start, keyed on the latest user message.
 - **Project/global scoping (on by default)** — split of graph memory into a per-project group and a shared global group, so project-specific facts and cross-project knowledge stay separated. Set `projectScoping: false` to collapse to a single bucket.
-- **`/graph` slash command** — status, search, dump, clear directly from the prompt.
+- **`/graph` slash command** — status, search, dump, load, clear directly from the prompt.
 
 ## Requirements
 
@@ -80,6 +80,7 @@ The `graph` tool is exposed to the LLM automatically. From the user side:
 /graph                       Status + recent episodes + active group
 /graph search QUERY          search_nodes + search_memory_facts
 /graph dump [path]           Export ALL episodes (every group) to markdown; use before reverting to flat files
+/graph load <path>           Re-import episodes from a dump file back into their original group ids
 /graph clear                 clear_graph for the active group (destructive)
 ```
 
@@ -91,6 +92,31 @@ The `graph` tool accepts a `scope` argument:
 - `search`: `"both"` (default, unions project + global), `"project"`, or `"global"`.
 
 The per-project group id is derived as `<groupId>_proj_<sanitizedProjectName>`, where the project name is the current working directory's basename. With scoping disabled (`projectScoping: false`), every operation uses the single `groupId` bucket and `scope` is ignored.
+
+### Ingesting a document from the CLI
+
+To load an arbitrary text file (notes, docs, transcripts) into graphiti episode memory outside of a pi session, use the ingest script:
+
+```
+npm run ingest -- <file> [options]
+# or: npx tsx scripts/ingest-file.ts <file> [options]
+```
+
+Options:
+
+- `--group <id>` target group_id (sanitized to `[A-Za-z0-9_]`).
+- `--name <base>` episode base name (default: file basename).
+- `--source <kind>` `text` | `message` | `json` (default: `text`).
+- `--chunk-chars <n>` split into ~n-char chunks on paragraph/line boundaries (default: 8000; `0` = whole file as one episode).
+- `--dry-run` show the chunk plan without writing.
+
+Group precedence: `--group` > `PI_GRAPHITI_GROUP_ID` > default. The document is written to that one explicit group (project scoping does not remap it), so you can drop a file into a specific bucket:
+
+```
+PI_GRAPHITI_GROUP_ID=myscratch npx tsx scripts/ingest-file.ts notes.md --chunk-chars 6000
+```
+
+Episodes extract asynchronously; allow ~30-90s before the entities/facts are searchable.
 
 ## Coexistence with other memory extensions
 

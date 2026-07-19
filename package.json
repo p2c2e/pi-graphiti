@@ -16,6 +16,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "ingest": "npx tsx scripts/ingest-file.ts",
     "test:scope": "npx tsx scripts/test-scope.ts",
     "smoke": "bash scripts/smoke.sh",
     "test": "npm run check && npm run test:scope && npm run smoke",
