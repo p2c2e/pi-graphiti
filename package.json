@@ -1,12 +1,13 @@
 {
   "name": "pi-graphiti",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "🕸️ Persistent knowledge graph for Pi via Graphiti MCP. Ambient recall, automatic episode writes on session events, /graph command.",
   "type": "module",
   "main": "src/index.ts",
   "files": [
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
@@ -38,13 +39,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/<your-github-username>/pi-graphiti"
+    "url": "git+https://github.com/p2c2e/pi-graphiti.git"
   },
   "bugs": {
-    "url": "https://github.com/<your-github-username>/pi-graphiti/issues"
+    "url": "https://github.com/p2c2e/pi-graphiti/issues"
   },
+  "homepage": "https://github.com/p2c2e/pi-graphiti#readme",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.74.0",

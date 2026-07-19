@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - **Merit-based save criterion (self-contained).** The policy block and `graph` tool guidance now tell the agent to judge each input on its OWN merit - save to the graph when the content carries relational or temporal signal (entities/relationships, changes over time), independent of whatever other memory tools exist. This replaces the earlier presence-dependent "coexists with flat memory / save to BOTH" wording, which was wrong for a standalone pi-graphiti install (no `memory` tool to route to) and coupled the decision to another extension. Narrowing graph's trigger to genuinely relational/temporal content also removes the winner-take-all overlap with a flat-memory tool without either one having to know about the other.
 - **Proactive in-turn saving.** The system-prompt policy block now gives the main agent an explicit imperative "WHEN TO SAVE (proactively, do NOT wait to be asked)" trigger list (corrections, preferences, durable facts/decisions, environment/convention discoveries, end of significant work) plus per-save scope guidance. Previously the block was purely descriptive, so the agent almost never called `graph add` unless explicitly told to. This restores autonomous saving during normal turns rather than only on the background nudge or explicit `graph`/`/graph` invocation.
