@@ -52,6 +52,10 @@ export interface GraphitiConfig {
   reviewEnabled: boolean;
   /** Recent messages fed to the curation review. 0 = all. Default 0. */
   reviewRecentMessages: number;
+  /** When true, detect user corrections in real time and fire an immediate
+   * curation review (instead of waiting for the next nudge interval).
+   * Default true. */
+  correctionDetection: boolean;
   /** Optional model override for the review subprocess (e.g. a cheap/fast
    * model). Empty/undefined uses the default model. */
   llmModelOverride?: string;

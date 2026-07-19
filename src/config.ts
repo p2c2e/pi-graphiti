@@ -122,6 +122,10 @@ export function loadConfig(): GraphitiConfig {
       "PI_GRAPHITI_REVIEW_RECENT",
       pick<number>(file.reviewRecentMessages, 0),
     ),
+    correctionDetection: envBool(
+      "PI_GRAPHITI_CORRECTION_DETECTION",
+      pick<boolean>(file.correctionDetection, true),
+    ),
     llmModelOverride: envStr(
       "PI_GRAPHITI_LLM_MODEL",
       pick<string>(file.llmModelOverride, ""),

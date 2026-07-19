@@ -9,6 +9,8 @@ The Graphiti MCP server is just an MCP — if you `pi mcp add` it, the LLM gets 
 - **`graph` tool** — single pi-native tool with three actions (`add` / `search` / `episodes`) so you don't need pi-mcp-adapter to use graphiti.
 - **Automatic episode writes** — pushes a snapshot every N user turns, before context compaction, and on session shutdown. No need for the model to remember to write.
 - **LLM curation pass (on by default)** — the turn-based nudge spawns a short-lived child `pi -p` (loading only this extension, so it just has the `graph` tool) that reviews the recent conversation and decides *what* is worth persisting and at *which scope* (project vs global), then calls `graph add` itself — or says "Nothing to save." Set `reviewEnabled: false` to fall back to raw snapshot pushes (all project scope) that rely purely on graphiti's server-side extraction.
+- **Proactive in-turn saving** — the system-prompt policy tells the agent *when* to persist proactively (corrections, preferences, durable facts/decisions, conventions, end of significant work), so it saves during normal turns instead of only on the background nudge.
+- **Correction detector (on by default)** — a user correcting the agent fires an *immediate* curation review, capturing the highest-signal "you should have remembered that" moment right away. Set `correctionDetection: false` to disable.
 - **System-prompt policy block** — every session starts knowing the graph exists and when to use it.
 - **Optional ambient recall** — opt-in injection of relevant entities/facts at session start, keyed on the latest user message.
 - **Project/global scoping (on by default)** — split of graph memory into a per-project group and a shared global group, so project-specific facts and cross-project knowledge stay separated. Set `projectScoping: false` to collapse to a single bucket.
@@ -64,6 +66,7 @@ Configuration is optional — defaults work against a local graphiti server.
 | `PI_GRAPHITI_PROJECT_SCOPING`   | `true`                        | Split memory into per-project (`<groupId>_proj_<project>`) + global groups. Set `false` for a single bucket. |
 | `PI_GRAPHITI_NUDGE_INTERVAL`    | `10`                          | User turns between background pushes. |
 | `PI_GRAPHITI_REVIEW_ENABLED`    | `true`                        | Nudge runs an LLM curation pass (child `pi -p`) that picks facts + scope. `false` = raw snapshot push. |
+| `PI_GRAPHITI_CORRECTION_DETECTION` | `true`                     | Detect user corrections in real time and fire an immediate curation review (rate-limited, reachability-gated). |
 | `PI_GRAPHITI_REVIEW_RECENT`     | `0`                           | Recent messages fed to the curation review. `0` = all. |
 | `PI_GRAPHITI_LLM_MODEL`         | (default model)               | Model override for the review subprocess (e.g. a cheap/fast model). |
 | `PI_GRAPHITI_LLM_THINKING`      | (`off` when model set)        | Thinking level for the review subprocess. |
