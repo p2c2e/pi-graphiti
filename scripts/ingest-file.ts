@@ -12,9 +12,10 @@
  *                       this run). Sanitized to [A-Za-z0-9_].
  *   --name <base>       Episode base name (default: file basename).
  *   --source <kind>     text | message | json  (default: text).
- *   --chunk-chars <n>   Split into ~n-char chunks on paragraph/line boundaries
- *                       (default: 8000). Use 0 to push the whole file as one
- *                       episode.
+ *   --chunk-chars <n>   Safety cap per episode (default: 8000). Each paragraph
+ *                       becomes its own episode; a paragraph larger than n is
+ *                       split into sentences packed up to n chars. Use 0 to
+ *                       push the whole file as one episode.
  *   --dry-run           Parse + chunk + print plan, but do NOT write.
  *   -h, --help          Show this help.
  *
@@ -35,6 +36,7 @@ import {
   sanitizeGroupId,
   defaultGroupId,
 } from "../src/backend.js";
+import { chunkText } from "../src/chunk.js";
 
 interface Args {
   file?: string;
@@ -107,68 +109,15 @@ Options:
   --group <id>        Target group_id (overrides PI_GRAPHITI_GROUP_ID).
   --name <base>       Episode base name (default: file basename).
   --source <kind>     text | message | json  (default: text).
-  --chunk-chars <n>   ~n-char chunks on paragraph/line boundaries
-                      (default: 8000; 0 = whole file as one episode).
+  --chunk-chars <n>   Per-episode safety cap (default: 8000; 0 = whole file).
+                      Each paragraph is its own episode; oversized paragraphs
+                      fall back to sentence packing then a hard cut.
   --dry-run           Show the plan without writing.
   -h, --help          Show this help.
 
 Example:
   PI_GRAPHITI_GROUP_ID=myscratch npx tsx scripts/ingest-file.ts notes.md --chunk-chars 6000
 `;
-
-/**
- * Split text into chunks no larger than maxChars, preferring paragraph (blank
- * line) boundaries, then single-line boundaries, then a hard character cut for
- * pathological single lines. Returns the whole text as one chunk when
- * maxChars <= 0.
- */
-export function chunkText(text: string, maxChars: number): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (maxChars <= 0 || trimmed.length <= maxChars) return [trimmed];
-
-  const paras = trimmed.split(/\n\s*\n/);
-  const chunks: string[] = [];
-  let cur = "";
-
-  const flush = () => {
-    const c = cur.trim();
-    if (c) chunks.push(c);
-    cur = "";
-  };
-
-  for (const para of paras) {
-    // A single paragraph bigger than the budget: split it further by lines,
-    // then hard-cut any remaining oversized line.
-    if (para.length > maxChars) {
-      flush();
-      for (const piece of splitOversized(para, maxChars)) chunks.push(piece);
-      continue;
-    }
-    if (cur && cur.length + 2 + para.length > maxChars) flush();
-    cur = cur ? `${cur}\n\n${para}` : para;
-  }
-  flush();
-  return chunks;
-}
-
-function splitOversized(block: string, maxChars: number): string[] {
-  const out: string[] = [];
-  let cur = "";
-  for (const line of block.split("\n")) {
-    if (line.length > maxChars) {
-      if (cur.trim()) { out.push(cur.trim()); cur = ""; }
-      for (let i = 0; i < line.length; i += maxChars) {
-        out.push(line.slice(i, i + maxChars));
-      }
-      continue;
-    }
-    if (cur && cur.length + 1 + line.length > maxChars) { out.push(cur.trim()); cur = ""; }
-    cur = cur ? `${cur}\n${line}` : line;
-  }
-  if (cur.trim()) out.push(cur.trim());
-  return out;
-}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));

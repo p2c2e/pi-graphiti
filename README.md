@@ -12,7 +12,7 @@ The Graphiti MCP server is just an MCP — if you `pi mcp add` it, the LLM gets 
 - **System-prompt policy block** — every session starts knowing the graph exists and when to use it.
 - **Optional ambient recall** — opt-in injection of relevant entities/facts at session start, keyed on the latest user message.
 - **Project/global scoping (on by default)** — split of graph memory into a per-project group and a shared global group, so project-specific facts and cross-project knowledge stay separated. Set `projectScoping: false` to collapse to a single bucket.
-- **`/graph` slash command** — status, search, dump, load, clear directly from the prompt.
+- **`/graph` slash command** — status, search, ingest, dump, load, clear directly from the prompt.
 
 ## Requirements
 
@@ -81,6 +81,7 @@ The `graph` tool is exposed to the LLM automatically. From the user side:
 /graph search QUERY          search_nodes + search_memory_facts
 /graph dump [path]           Export ALL episodes (every group) to markdown; use before reverting to flat files
 /graph load <path>           Re-import episodes from a dump file back into their original group ids
+/graph ingest <path> [global] Memorize a text file: chunk it and push the chunks as episodes into the current project's graph memory (or the global group with "global")
 /graph clear                 clear_graph for the active group (destructive)
 ```
 
@@ -107,7 +108,7 @@ Options:
 - `--group <id>` target group_id (sanitized to `[A-Za-z0-9_]`).
 - `--name <base>` episode base name (default: file basename).
 - `--source <kind>` `text` | `message` | `json` (default: `text`).
-- `--chunk-chars <n>` split into ~n-char chunks on paragraph/line boundaries (default: 8000; `0` = whole file as one episode).
+- `--chunk-chars <n>` per-episode safety cap (default: 8000; `0` = whole file as one episode). Chunking is paragraph-driven: each paragraph is its own episode, and a paragraph larger than the cap is split into sentences packed up to the cap (hard-cut only if a single sentence still exceeds it).
 - `--dry-run` show the chunk plan without writing.
 
 Group precedence: `--group` > `PI_GRAPHITI_GROUP_ID` > default. The document is written to that one explicit group (project scoping does not remap it), so you can drop a file into a specific bucket:

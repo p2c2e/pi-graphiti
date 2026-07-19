@@ -8,6 +8,10 @@
  *                       use before reverting to flat-file memory
  *   /graph load <path>  re-import episodes from a dump file back into the graph
  *                       (into their original group ids)
+ *   /graph ingest <path> [global]
+ *                       memorize the contents of a text file: chunk it and push
+ *                       the chunks as episodes into the current project's graph
+ *                       memory (or the global group when "global" is given)
  *   /graph clear        clear_graph for the configured group id (destructive)
  */
 
@@ -15,6 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GraphitiBackend } from "./backend.js";
+import { chunkText } from "./chunk.js";
 import { agentRoot } from "./project.js";
 
 export function registerGraphitiCommand(
@@ -22,7 +27,7 @@ export function registerGraphitiCommand(
   backend: GraphitiBackend | null,
 ): void {
   pi.registerCommand("graph", {
-    description: "Show graphiti graph-memory status, search memory, dump/load episodes, or clear",
+    description: "Show graphiti graph-memory status, search/ingest memory, dump/load episodes, or clear",
     handler: async (args, ctx) => {
       if (!backend) {
         ctx.ui.notify(
@@ -177,6 +182,71 @@ export function registerGraphitiCommand(
         return;
       }
 
+      if (sub === "ingest") {
+        // /graph ingest <path> [global]  — trailing "global" targets the global group.
+        const rest = argv.slice(1);
+        const scope: "project" | "global" =
+          rest.length && rest[rest.length - 1].toLowerCase() === "global" ? "global" : "project";
+        const explicit = (scope === "global" ? rest.slice(0, -1) : rest).join(" ").trim();
+        if (!explicit) {
+          ctx.ui.notify("Usage: /graph ingest <path> [global]", "warning");
+          return;
+        }
+        const inPath = path.resolve(explicit.replace(/^~(?=$|\/)/, process.env.HOME || "~"));
+        if (!fs.existsSync(inPath) || !fs.statSync(inPath).isFile()) {
+          ctx.ui.notify(`ingest failed: not a file: ${inPath}`, "error");
+          return;
+        }
+        const status = await backend.getStatus(true);
+        if (!status.available) {
+          ctx.ui.notify(`Graphiti unavailable: ${status.message}`, "error");
+          return;
+        }
+        try {
+          const text = fs.readFileSync(inPath, "utf-8");
+          if (!text.trim()) {
+            ctx.ui.notify(`ingest failed: file is empty: ${inPath}`, "warning");
+            return;
+          }
+          const chunks = chunkText(text, 8000);
+          const baseName = path.basename(inPath);
+          const pad = String(chunks.length).length;
+          let ok = 0;
+          let fail = 0;
+          for (let i = 0; i < chunks.length; i++) {
+            const name =
+              chunks.length === 1
+                ? baseName
+                : `${baseName} [${String(i + 1).padStart(pad, "0")}/${chunks.length}]`;
+            try {
+              await backend.addEpisode({
+                name,
+                body: chunks[i],
+                scope,
+                sourceDescription: `graph ingest from ${baseName}`,
+              });
+              ok++;
+            } catch {
+              fail++;
+            }
+          }
+          ctx.ui.notify(
+            [
+              `Memorized ${ok} chunk(s) from:`,
+              `  ${inPath}`,
+              `  -> group ${backend.writeGroupId(scope)} (${scope})`,
+              fail > 0 ? `  (${fail} chunk(s) failed)` : "",
+              "",
+              "Entities/facts extract asynchronously; allow ~30-90s before searching.",
+            ].filter(Boolean).join("\n"),
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.notify(`ingest failed: ${(err as Error).message}`, "error");
+        }
+        return;
+      }
+
       if (sub === "search") {
         const query = argv.slice(1).join(" ").trim();
         if (!query) {
@@ -241,7 +311,7 @@ export function registerGraphitiCommand(
         lines.push(`get_episodes failed: ${(err as Error).message}`);
       }
       lines.push("");
-      lines.push("Subcommands: /graph search QUERY  |  /graph dump [path]  |  /graph load <path>  |  /graph clear");
+      lines.push("Subcommands: /graph search QUERY  |  /graph ingest <path> [global]  |  /graph dump [path]  |  /graph load <path>  |  /graph clear");
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
