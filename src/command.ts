@@ -22,7 +22,7 @@ export function registerGraphitiCommand(
   backend: GraphitiBackend | null,
 ): void {
   pi.registerCommand("graph", {
-    description: "Show graphiti backend status, search the graph, dump all episodes, or clear",
+    description: "Show graphiti graph-memory status, search memory, dump/load episodes, or clear",
     handler: async (args, ctx) => {
       if (!backend) {
         ctx.ui.notify(
