@@ -29,7 +29,7 @@ Default URL the extension expects: `http://localhost:8000/mcp/` (Graphiti's defa
 pi install npm:pi-graphiti
 
 # or pinned from git
-pi install git:github.com/p2c2e/pi-graphiti@v0.3.0
+pi install git:github.com/p2c2e/pi-graphiti@v0.4.0
 ```
 
 ## Configure

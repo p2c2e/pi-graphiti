@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - **`/graph setup` interactive wizard.** New subcommand that captures your top-level `groupId` and project-scoping preference, then configures the backend: it can detect Docker, start the local FalkorDB + Graphiti MCP stack (`docker compose -p graphiti up -d`) and tail its logs, or point at an external MCP server URL. All Docker control shells out to the `docker` CLI directly (no bash), so it works on macOS, Linux, and WSL/Windows. Writes `~/.pi/agent/pi-graphiti-config.json` and warns when a `PI_GRAPHITI_*` env var would shadow a saved value; changes take effect after restarting pi. New config key `backendDir` (`PI_GRAPHITI_BACKEND_DIR`) records the backend directory holding `docker-compose-falkordb.yml`. Before offering to start the stack, the wizard first health-probes the target URL and skips the start when an MCP server already answers there (this stack, a foreign container, or a remote), avoiding a port-conflict race.
 - **`/graph uninstall` (alias `teardown`) + best-effort `preuninstall`.** Tears down the local Docker stack (`docker compose -p graphiti down`, keeping the data volume) but ONLY if `/graph setup` actually started it, tracked via the new `startedBySetup` config marker; a pre-existing or externally started stack is left running with a message. Run it before `pi remove` (package removal only edits settings and runs no teardown hook). A dependency-free `preuninstall` npm script performs the same owned-only teardown for plain `npm uninstall`.

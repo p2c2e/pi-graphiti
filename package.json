@@ -1,6 +1,6 @@
 {
   "name": "pi-graphiti",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "🕸️ Persistent knowledge graph for Pi via Graphiti MCP. Ambient recall, automatic episode writes on session events, /graph command.",
   "type": "module",
   "main": "src/index.ts",
