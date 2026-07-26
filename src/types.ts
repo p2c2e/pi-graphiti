@@ -62,6 +62,15 @@ export interface GraphitiConfig {
   /** Optional thinking level for the review subprocess. When a model override
    * is set and this is unset, thinking defaults to "off". */
   llmThinkingOverride?: string;
+  /** Optional path to the graphiti backend directory that holds
+   * docker-compose-falkordb.yml (used by `/graph setup` to start the local
+   * Docker stack and tail its logs). Empty/undefined disables Docker control
+   * actions. */
+  backendDir?: string;
+  /** True when `/graph setup` actually started the local Docker stack (as
+   * opposed to it already running). `/graph uninstall` only tears the stack
+   * down when this is true, so a pre-existing stack is left untouched. */
+  startedBySetup?: boolean;
 }
 
 /**

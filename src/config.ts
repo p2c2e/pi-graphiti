@@ -20,7 +20,7 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 export const DEFAULT_NUDGE_INTERVAL = 10;
 export const DEFAULT_FLUSH_MIN_TURNS = 6;
 
-function configPath(): string {
+export function configPath(): string {
   return (
     process.env.PI_GRAPHITI_CONFIG ||
     path.join(os.homedir(), ".pi", "agent", "pi-graphiti-config.json")
@@ -134,5 +134,57 @@ export function loadConfig(): GraphitiConfig {
       "PI_GRAPHITI_LLM_THINKING",
       pick<string>(file.llmThinkingOverride, ""),
     ) || undefined,
+    backendDir: envStr(
+      "PI_GRAPHITI_BACKEND_DIR",
+      pick<string>(file.backendDir, ""),
+    ) || undefined,
+    startedBySetup: pick<boolean>(file.startedBySetup, false),
   };
+}
+
+/**
+ * Merge a partial config into the on-disk JSON file and write it back.
+ *
+ * Reads the existing file (if any), shallow-merges `patch` over it, and writes
+ * pretty-printed JSON with LF line endings. Creates the parent directory as
+ * needed. Undefined patch values are ignored so callers can omit untouched
+ * keys. Returns the path written.
+ *
+ * NOTE: environment variables (PI_GRAPHITI_*) still override the file at load
+ * time. Callers should warn the user when a relevant env var is set, because
+ * the written value will be shadowed until that env var is unset.
+ */
+export function writeConfigPatch(patch: Record<string, unknown>): string {
+  const p = configPath();
+  const current = readJsonSafe(p);
+  const merged: Record<string, unknown> = { ...current };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) merged[k] = v;
+  }
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  return p;
+}
+
+/**
+ * Report which config keys are currently shadowed by an environment variable.
+ * Used by `/graph setup` to warn that a written value will not take effect
+ * until the env var is unset. Maps config key -> env var name.
+ */
+export function envShadows(keys: string[]): string[] {
+  const map: Record<string, string> = {
+    enabled: "PI_GRAPHITI_ENABLED",
+    url: "PI_GRAPHITI_URL",
+    groupId: "PI_GRAPHITI_GROUP_ID",
+    projectScoping: "PI_GRAPHITI_PROJECT_SCOPING",
+    backendDir: "PI_GRAPHITI_BACKEND_DIR",
+  };
+  const shadowed: string[] = [];
+  for (const k of keys) {
+    const env = map[k];
+    if (env && process.env[env] !== undefined && process.env[env] !== "") {
+      shadowed.push(env);
+    }
+  }
+  return shadowed;
 }

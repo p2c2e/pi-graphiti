@@ -18,9 +18,9 @@ The Graphiti MCP server is just an MCP — if you `pi mcp add` it, the LLM gets 
 
 ## Requirements
 
-A running Graphiti MCP server. For a fully-local stack (FalkorDB + Ollama, no cloud LLM), see the [`graphiti-mcp-local-stack`](../) skill in the parent repo or follow [Graphiti's docs](https://help.getzep.com/graphiti).
+A running Graphiti MCP server (FalkorDB or Neo4j backend). Stand one up by following [Graphiti's docs](https://help.getzep.com/graphiti), or run `/graph setup` after installing to provision and start a local Docker stack for you.
 
-Default URL the extension expects: `http://localhost:8000/mcp/`.
+Default URL the extension expects: `http://localhost:8000/mcp/` (Graphiti's default HTTP endpoint).
 
 ## Install
 
@@ -29,10 +29,7 @@ Default URL the extension expects: `http://localhost:8000/mcp/`.
 pi install npm:pi-graphiti
 
 # or pinned from git
-pi install git:github.com/<your-github-username>/pi-graphiti@v0.1.0
-
-# or a local clone (dev loop)
-pi install ~/workspace/pi-graphiti
+pi install git:github.com/p2c2e/pi-graphiti@v0.3.0
 ```
 
 ## Configure
@@ -81,12 +78,16 @@ The `graph` tool is exposed to the LLM automatically. From the user side:
 
 ```
 /graph                       Status + recent episodes + active group
+/graph setup                 Interactive wizard: set group id + project scoping, and configure/start the backend (local Docker stack or external MCP server)
 /graph search QUERY          search_nodes + search_memory_facts
 /graph dump [path]           Export ALL episodes (every group) to markdown; use before reverting to flat files
 /graph load <path>           Re-import episodes from a dump file back into their original group ids
 /graph ingest <path> [global] Memorize a text file: chunk it and push the chunks as episodes into the current project's graph memory (or the global group with "global")
 /graph clear                 clear_graph for the active group (destructive)
+/graph uninstall             Tear down the local Docker stack, but ONLY if /graph setup started it; run before `pi remove`
 ```
+
+> **Uninstalling:** run `/graph uninstall` (alias `/graph teardown`) *before* `pi remove`. It stops the local Docker stack only when the setup wizard started it (config `startedBySetup`); a pre-existing or external stack is left running with a message. `pi remove` itself only edits settings and cannot run teardown. A best-effort `preuninstall` npm script does the same cleanup for plain `npm uninstall`.
 
 ### Scope (when `projectScoping` is enabled)
 

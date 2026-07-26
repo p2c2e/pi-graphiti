@@ -8,7 +8,9 @@
     "src",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/preuninstall.mjs",
+    "scripts/ingest-file.ts"
   ],
   "pi": {
     "extensions": [
@@ -17,10 +19,12 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "preuninstall": "node scripts/preuninstall.mjs",
     "ingest": "npx tsx scripts/ingest-file.ts",
     "test:scope": "npx tsx scripts/test-scope.ts",
     "smoke": "bash scripts/smoke.sh",
-    "test": "npm run check && npm run test:scope && npm run smoke",
+    "smoke:uninstall": "bash scripts/smoke-uninstall.sh",
+    "test": "npm run check && npm run test:scope && npm run smoke:uninstall && npm run smoke",
     "prepublishOnly": "npm run check"
   },
   "keywords": [
