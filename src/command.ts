@@ -13,6 +13,8 @@
  *                       the chunks as episodes into the current project's graph
  *                       memory (or the global group when "global" is given)
  *   /graph clear        clear_graph for the configured group id (destructive)
+ *   /graph spool        show the offline write queue (episodes captured while the
+ *                       server was down); `drain` replays now, `clear` discards
  *   /graph setup        interactive wizard: set group id + project scoping,
  *                       and configure/start the graphiti backend (local Docker
  *                       stack or an external MCP server). Cross-platform.
@@ -28,6 +30,15 @@ import type { GraphitiBackend } from "./backend.js";
 import { buildGraphitiBackend, sanitizeGroupId } from "./backend.js";
 import { loadConfig, writeConfigPatch, envShadows } from "./config.js";
 import { chunkText } from "./chunk.js";
+import {
+  stats as spoolStats,
+  clear as spoolClear,
+  drain as spoolDrain,
+  limitsFromConfig as spoolLimits,
+  spoolFile as spoolFilePath,
+  deadLetterFile as spoolDeadLetterPath,
+  type SpoolEntry,
+} from "./spool.js";
 import { agentRoot, detectProjectName } from "./project.js";
 import {
   probeDocker,
@@ -84,7 +95,16 @@ export function registerGraphitiCommand(
       if (sub === "clear") {
         try {
           await backend.clearGraph();
-          ctx.ui.notify(`Cleared graphiti group_id="${backend.options.groupId}".`, "info");
+          // The spool MUST be cleared too: pending episodes would replay on the
+          // next healthy cycle and re-populate the graph the user just wiped.
+          const dropped = spoolClear();
+          ctx.ui.notify(
+            [
+              `Cleared graphiti group_id="${backend.options.groupId}".`,
+              ...(dropped > 0 ? [`Also discarded ${dropped} spooled episode(s) that would have replayed into it.`] : []),
+            ].join("\n"),
+            "info",
+          );
         } catch (err) {
           ctx.ui.notify(`clear_graph failed: ${(err as Error).message}`, "error");
         }
@@ -118,6 +138,12 @@ export function registerGraphitiCommand(
           for (const g of groups) {
             lines.push(`## group_id: ${g.groupId}  (${g.episodes.length} episodes)`);
             lines.push("");
+            if (g.error) {
+              lines.push(`> **READ FAILED for this group: ${g.error}**`);
+              lines.push("> This section is INCOMPLETE. Do not treat this dump as a full export.");
+              lines.push("");
+              continue;
+            }
             if (g.episodes.length === 0) {
               lines.push("_(none)_");
               lines.push("");
@@ -133,10 +159,33 @@ export function registerGraphitiCommand(
               lines.push("");
             }
           }
+          // Spooled episodes exist NOWHERE else yet, so a pre-revert export that
+          // omitted them would miss exactly the at-risk memory.
+          const pendingSpool = readPendingSpoolEntries();
+          if (pendingSpool.length > 0) {
+            lines.push(`## spool (pending, not yet in the graph)  (${pendingSpool.length} episodes)`);
+            lines.push("");
+            for (const e of pendingSpool) {
+              total++;
+              lines.push(`### ${e.name}  (spooled ${new Date(e.ts).toISOString()}, group ${e.groupId})`);
+              lines.push("");
+              lines.push(e.body.trim() || "_(empty body)_");
+              lines.push("");
+            }
+          }
           fs.mkdirSync(path.dirname(outPath), { recursive: true });
           fs.writeFileSync(outPath, lines.join("\n"), "utf-8");
+          const failed = groups.filter((g) => g.error);
           ctx.ui.notify(
             [
+              ...(failed.length > 0
+                ? [
+                  `WARNING: ${failed.length} of ${groups.length} group(s) FAILED to read - this dump is INCOMPLETE:`,
+                  ...failed.map((g) => `  - ${g.groupId}: ${g.error}`),
+                  "Do not revert to flat files based on this export.",
+                  "",
+                ]
+                : []),
               `Dumped ${total} episode(s) across ${groups.length} group(s) to:`,
               `  ${outPath}`,
               "",
@@ -145,7 +194,7 @@ export function registerGraphitiCommand(
               '  2. Set "enabled": false in ~/.pi/agent/pi-graphiti-config.json (or PI_GRAPHITI_ENABLED=0).',
               "  3. (Optional) /graph clear to wipe the graph.",
             ].join("\n"),
-            "info",
+            failed.length > 0 ? "warning" : "info",
           );
         } catch (err) {
           ctx.ui.notify(`dump failed: ${(err as Error).message}`, "error");
@@ -279,6 +328,76 @@ export function registerGraphitiCommand(
         return;
       }
 
+      // `spool` inspects / forces / discards the offline write queue.
+      if (sub === "spool") {
+        const op = (argv[1] || "").toLowerCase();
+        const cfg = loadConfig();
+        const before = spoolStats();
+
+        if (op === "clear") {
+          if (before.entries === 0) {
+            ctx.ui.notify("Spool is already empty.", "info");
+            return;
+          }
+          const confirmed = await ctx.ui.confirm(
+            `Discard ${before.entries} spooled episode(s)?`,
+            "These episodes were captured while graphiti was unreachable and are NOT in the graph yet. Discarding loses them permanently.",
+          );
+          if (!confirmed) {
+            ctx.ui.notify("Cancelled; spool left intact.", "info");
+            return;
+          }
+          const removed = spoolClear();
+          ctx.ui.notify(`Discarded ${removed} spooled episode(s).`, "warning");
+          return;
+        }
+
+        if (op === "drain") {
+          if (before.entries === 0) {
+            ctx.ui.notify("Spool is empty; nothing to replay.", "info");
+            return;
+          }
+          const st = await backend.getStatus(true);
+          if (!st.available) {
+            ctx.ui.notify(
+              `Graphiti still unavailable: ${st.message}\n${before.entries} episode(s) stay spooled.`,
+              "error",
+            );
+            return;
+          }
+          // Force the full backlog, not the per-cycle batch.
+          const res = await spoolDrain(backend, spoolLimits(cfg), before.entries);
+          const out = [`Replayed ${res.replayed} of ${before.entries} spooled episode(s).`];
+          if (res.recovered) out.push(`${res.recovered} recovered from an interrupted drain.`);
+          if (res.expired) out.push(`${res.expired} discarded (older than ${cfg.spoolMaxAgeDays} days) - see ${spoolDeadLetterPath()}.`);
+          if (res.abandoned) out.push(`${res.abandoned} abandoned (repeatedly rejected) - see ${spoolDeadLetterPath()}.`);
+          if (res.requeueFailed) out.push(`WARNING: could not write pending episodes back to disk; they are held in a claim file for recovery.`);
+          if (res.remaining) out.push(`${res.remaining} still pending${res.stoppedOn ? `: ${res.stoppedOn}` : ""}.`);
+          out.push("Extraction is async; entities/facts appear in 30-90s.");
+          ctx.ui.notify(out.join("\n"), res.remaining || res.requeueFailed ? "warning" : "info");
+          return;
+        }
+
+        const out: string[] = [];
+        out.push(`Spool:    ${spoolFilePath()}`);
+        out.push(`Pending:  ${before.entries} episode(s), ${(before.bytes / 1024).toFixed(1)} kB`);
+        if (before.stranded > 0) {
+          out.push(`          (${before.stranded} held in a claim file: a drain in flight, or one that crashed)`);
+        }
+        if (before.oldestTs) out.push(`Oldest:   ${new Date(before.oldestTs).toISOString()}`);
+        if (before.newestTs) out.push(`Newest:   ${new Date(before.newestTs).toISOString()}`);
+        if (before.deadLettered > 0) {
+          out.push(`Dropped:  ${before.deadLettered} episode(s) recorded in ${spoolDeadLetterPath()}`);
+        }
+        out.push(`Limits:   ${cfg.spoolMaxEntries} entries / ${(cfg.spoolMaxBytes / (1024 * 1024)).toFixed(0)} MB / ${cfg.spoolMaxAgeDays} days`);
+        out.push(`Enabled:  ${cfg.spoolEnabled ? "yes" : "no"}`);
+        out.push("");
+        out.push("Spooled episodes replay automatically on the next healthy cycle.");
+        out.push("/graph spool drain   replay now   |   /graph spool clear   discard");
+        ctx.ui.notify(out.join("\n"), "info");
+        return;
+      }
+
       if (sub === "search") {
         const query = argv.slice(1).join(" ").trim();
         if (!query) {
@@ -323,8 +442,22 @@ export function registerGraphitiCommand(
       }
       lines.push(`Status:   ${status.available ? "ok" : "unavailable"}`);
       if (status.backend) lines.push(`Backend:  ${status.backend}`);
+      const spool = spoolStats();
+      if (spool.entries > 0) {
+        const oldest = spool.oldestTs ? new Date(spool.oldestTs).toISOString() : "?";
+        lines.push(`Spool:    ${spool.entries} pending episode(s), oldest ${oldest}`);
+        lines.push(`          replayed automatically; "/graph spool drain" to force`);
+      }
+      if (spool.deadLettered > 0) {
+        lines.push(`Dropped:  ${spool.deadLettered} episode(s) in ${spoolDeadLetterPath()} ("/graph spool" for detail)`);
+      }
       if (!status.available) {
         lines.push(`Error:    ${status.message}`);
+        if (typeof status.consecutiveFailures === "number" && status.consecutiveFailures > 0) {
+          lines.push(
+            `Breaker:  ${status.consecutiveFailures} consecutive failure(s), next probe allowed in ${Math.round((status.retryAfterMs ?? 0) / 1000)}s`,
+          );
+        }
         ctx.ui.notify(lines.join("\n"), "warning");
         return;
       }
@@ -713,6 +846,29 @@ function expandHome(p: string): string {
 }
 
 /** Best-effort string field lookup over a raw graphiti object. */
+/**
+ * Read pending spool entries for inclusion in `/graph dump`. These episodes are
+ * not in the graph yet, so an export that omitted them would miss exactly the
+ * memory that exists in only one place.
+ */
+function readPendingSpoolEntries(): SpoolEntry[] {
+  const out: SpoolEntry[] = [];
+  for (const file of [spoolFilePath(), spoolDeadLetterPath()]) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const e = JSON.parse(t) as SpoolEntry;
+          if (e && typeof e.body === "string" && typeof e.name === "string") out.push(e);
+        } catch { /* skip torn line */ }
+      }
+    } catch { /* unreadable; skip */ }
+  }
+  return out;
+}
+
 function pickField(obj: Record<string, unknown>, keys: string[]): string | undefined {
   for (const k of keys) {
     const v = obj[k];

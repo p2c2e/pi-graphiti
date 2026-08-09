@@ -28,6 +28,18 @@ export interface GraphitiConfig {
    * pays it, and a hung server would otherwise stall a turn for the full work
    * timeout. See docs/design/outage-resilience.md. */
   statusTimeoutMs: number;
+  /** When true, episodes that fail to write (server down) are appended to a
+   * disk spool and replayed on the next healthy probe instead of being dropped.
+   * Default true. */
+  spoolEnabled: boolean;
+  /** Max episodes retained in the spool (newest win). Default 200. */
+  spoolMaxEntries: number;
+  /** Max total spool size in bytes. Default 8388608 (8MB). */
+  spoolMaxBytes: number;
+  /** Spooled episodes older than this are discarded on drain. Default 14. */
+  spoolMaxAgeDays: number;
+  /** Max episodes replayed per drain cycle. Default 25. */
+  spoolDrainBatch: number;
   /** When true, split graph memory into a per-project group + a shared global
    * group (per-project id = `<groupId>_proj_<sanitizedProjectName>`). When
    * false, every op uses the single `groupId` bucket — identical to

@@ -17,6 +17,7 @@ import { buildGraphitiBackend } from "./backend.js";
 import { registerGraphitiTool } from "./tool.js";
 import { registerGraphitiCommand } from "./command.js";
 import { setupGraphitiSync } from "./sync.js";
+import { maybeDrain } from "./spool.js";
 import { setupGraphitiCorrectionDetector } from "./correction-detector.js";
 import { buildGraphitiInjection } from "./context.js";
 import { detectProjectName } from "./project.js";
@@ -56,9 +57,15 @@ export default function init(pi: ExtensionAPI): void {
 
   if (!backend) return;
 
-  registerGraphitiTool(pi, backend);
+  registerGraphitiTool(pi, backend, config);
   setupGraphitiSync(pi, backend, config);
   setupGraphitiCorrectionDetector(pi, backend, config);
+
+  // Replay anything stranded by a previous session's outage. Detached and
+  // self-gating: no probe and no I/O beyond one stat when the spool is empty,
+  // so this cannot delay startup.
+  // maybeDrain is total (never rejects), so no .catch is needed here.
+  void maybeDrain(backend, config);
 
   // System prompt augmentation: always append the policy block describing the
   // `graph` tool. When injectContext is enabled, additionally append a recall

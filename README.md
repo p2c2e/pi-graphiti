@@ -72,6 +72,11 @@ Configuration is optional — defaults work against a local graphiti server. You
 | `PI_GRAPHITI_FLUSH_MIN_TURNS`   | `6`                           | Minimum user turns before flush triggers. |
 | `PI_GRAPHITI_TIMEOUT_MS`        | `60000`                       | Per-call timeout for real work (writes, searches, episode reads). |
 | `PI_GRAPHITI_STATUS_TIMEOUT_MS` | `3000`                        | Budget for cheap reachability probes (`get_status`). Bounds how long a hung server can delay a turn. See [outage resilience](docs/design/outage-resilience.md). |
+| `PI_GRAPHITI_SPOOL`             | `true`                        | Spool episodes to disk when the server is down and replay them automatically. Set `false` to drop failed writes instead. |
+| `PI_GRAPHITI_SPOOL_MAX_ENTRIES` | `200`                         | Max spooled episodes (newest win). |
+| `PI_GRAPHITI_SPOOL_MAX_BYTES`   | `8388608`                     | Max total spool size (8MB). |
+| `PI_GRAPHITI_SPOOL_MAX_AGE_DAYS`| `14`                          | Spooled episodes older than this are discarded on drain. |
+| `PI_GRAPHITI_SPOOL_DRAIN_BATCH` | `25`                          | Max episodes replayed per drain cycle (`/graph spool drain` replays all). |
 
 ## Usage
 
@@ -85,6 +90,7 @@ The `graph` tool is exposed to the LLM automatically. From the user side:
 /graph load <path>           Re-import episodes from a dump file back into their original group ids
 /graph ingest <path> [global] Memorize a text file: chunk it and push the chunks as episodes into the current project's graph memory (or the global group with "global")
 /graph clear                 clear_graph for the active group (destructive)
+/graph spool                 Show the offline write queue (episodes captured while the server was down); `drain` replays now, `clear` discards
 /graph uninstall             Tear down the local Docker stack, but ONLY if /graph setup started it; run before `pi remove`
 ```
 
@@ -105,9 +111,20 @@ and the agent keeps working. Cost of an outage:
   so a dead server costs ~12 probes/hour instead of 120. A success resets the
   breaker immediately, and every `/graph` subcommand force-probes so you never
   wait out a backoff window.
+- **No memory is lost.** Episodes that cannot be written (turn nudge, pre-compact
+  and shutdown flushes, and the agent's own `graph add`) are appended to a disk
+  spool at `~/.pi/agent/pi-graphiti-spool/pending.jsonl` and replayed
+  automatically on the next healthy cycle. `/graph` shows the pending depth;
+  `/graph spool drain` forces a replay and `/graph spool clear` discards.
+  Bounded by entry count, total bytes, and age; anything the spool does drop is
+  recorded in `dead-letter.jsonl` rather than deleted silently. (One gap: the
+  correction detector still skips rather than spools during an outage.)
+- **Shutdown does no network I/O at all** - it spools synchronously, so a slow
+  server cannot make the episode race process exit. The pre-compact flush, which
+  the host awaits, has its own 5s write budget and spools on expiry.
 
-Full analysis, per-path blocking table, and the remaining tracked work (write
-spooling, outage notification) are in
+Full analysis, per-path blocking table, and the remaining tracked work (outage
+notification, compact-flush budget) are in
 [docs/design/outage-resilience.md](docs/design/outage-resilience.md).
 
 ### Scope (when `projectScoping` is enabled)

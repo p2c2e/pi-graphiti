@@ -12,7 +12,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { GraphitiBackend } from "./backend.js";
-import type { GraphScope } from "./types.js";
+import type { GraphScope, GraphitiConfig } from "./types.js";
+import { spoolEpisode } from "./spool.js";
 
 const TOOL_DESCRIPTION = `Read and write the persistent knowledge graph memory (graphiti).
 
@@ -39,6 +40,7 @@ Judge each input on its own merit: persist it here when it carries relational or
 export function registerGraphitiTool(
   pi: ExtensionAPI,
   backend: GraphitiBackend,
+  config: GraphitiConfig,
 ): void {
   pi.registerTool({
     name: "graph",
@@ -77,11 +79,54 @@ export function registerGraphitiTool(
         }),
       ),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const { action } = params;
+
+      /**
+       * Single spool-and-report path for `add`.
+       *
+       * Reporting success is deliberate: the episode is durably on disk and will
+       * be replayed, so the agent must not retry or re-derive it. But success is
+       * conditional on `res.ok`, and truncation is surfaced rather than hidden -
+       * an earlier revision could silently drop everything past 20k chars behind
+       * a "No need to retry" message.
+       */
+      const spoolAdd = (reason: string) => {
+        const content = (params.content ?? "").trim();
+        if (!content) {
+          return resultText({ success: false, error: "content is required for action='add'" });
+        }
+        const name = (params.name ?? defaultEpisodeName(content)).slice(0, 80);
+        const scope: GraphScope = params.scope === "global" ? "global" : "project";
+        const res = spoolEpisode(config, {
+          name,
+          body: content,
+          groupId: backend.writeGroupId(scope),
+          source: params.source ?? "text",
+          sourceDescription: `pi-graphiti tool (spooled: ${reason})`,
+          origin: "tool",
+        });
+        const truncNote = res.truncated
+          ? ` NOTE: the body was truncated to ${res.storedChars} of ${res.originalChars} characters; re-add the remainder separately if it matters.`
+          : "";
+        return resultText({
+          success: res.ok,
+          spooled: res.ok,
+          ...(res.truncated ? { truncated: true, stored_chars: res.storedChars, original_chars: res.originalChars } : {}),
+          ...(res.ok ? {} : { error: `Graphiti unavailable (${reason}) and the episode could not be spooled (spooling disabled or the spool write failed).` }),
+          message: res.ok
+            ? `Graphiti unavailable (${reason}); episode written to the local spool and will be replayed automatically when the server returns. No need to retry.${truncNote}`
+            : `Graphiti unavailable (${reason}) and spooling did not persist the episode.`,
+          group_id: backend.writeGroupId(scope),
+          scope,
+          name,
+        });
+      };
 
       const status = await backend.getStatus();
       if (!status.available) {
+        // Writes spool; reads genuinely cannot be served, so they still fail.
+        if (action === "add") return spoolAdd(status.message);
         return resultText({
           success: false,
           error: `Graphiti unavailable: ${status.message}`,
@@ -97,7 +142,14 @@ export function registerGraphitiTool(
           const name = (params.name ?? defaultEpisodeName(content)).slice(0, 80);
           const source = params.source ?? "text";
           const scope: GraphScope = params.scope === "global" ? "global" : "project";
-          await backend.addEpisode({ name, body: content, source, scope });
+          try {
+            await backend.addEpisode({ name, body: content, source, scope });
+          } catch (err) {
+            // Server died between the probe and the write: spool instead of
+            // handing the agent a failure it cannot act on.
+            if (signal?.aborted) throw err;
+            return spoolAdd((err as Error).message);
+          }
           return resultText({
             success: true,
             message: `Episode queued. Extraction is async; entities/facts may not be searchable immediately.`,

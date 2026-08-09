@@ -20,6 +20,10 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 /** Health-probe budget. Small on purpose: a probe is not work, and every awaited
  * gate pays it. See docs/design/outage-resilience.md. */
 export const DEFAULT_STATUS_TIMEOUT_MS = 3000;
+export const DEFAULT_SPOOL_MAX_ENTRIES = 200;
+export const DEFAULT_SPOOL_MAX_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_SPOOL_MAX_AGE_DAYS = 14;
+export const DEFAULT_SPOOL_DRAIN_BATCH = 25;
 export const DEFAULT_NUDGE_INTERVAL = 10;
 export const DEFAULT_FLUSH_MIN_TURNS = 6;
 
@@ -88,6 +92,26 @@ export function loadConfig(): GraphitiConfig {
     statusTimeoutMs: envInt(
       "PI_GRAPHITI_STATUS_TIMEOUT_MS",
       pick<number>(file.statusTimeoutMs, DEFAULT_STATUS_TIMEOUT_MS),
+    ),
+    spoolEnabled: envBool(
+      "PI_GRAPHITI_SPOOL",
+      pick<boolean>(file.spoolEnabled, true),
+    ),
+    spoolMaxEntries: envInt(
+      "PI_GRAPHITI_SPOOL_MAX_ENTRIES",
+      pick<number>(file.spoolMaxEntries, DEFAULT_SPOOL_MAX_ENTRIES),
+    ),
+    spoolMaxBytes: envInt(
+      "PI_GRAPHITI_SPOOL_MAX_BYTES",
+      pick<number>(file.spoolMaxBytes, DEFAULT_SPOOL_MAX_BYTES),
+    ),
+    spoolMaxAgeDays: envInt(
+      "PI_GRAPHITI_SPOOL_MAX_AGE_DAYS",
+      pick<number>(file.spoolMaxAgeDays, DEFAULT_SPOOL_MAX_AGE_DAYS),
+    ),
+    spoolDrainBatch: envInt(
+      "PI_GRAPHITI_SPOOL_DRAIN_BATCH",
+      pick<number>(file.spoolDrainBatch, DEFAULT_SPOOL_DRAIN_BATCH),
     ),
     projectScoping: envBool(
       "PI_GRAPHITI_PROJECT_SCOPING",

@@ -1,3 +1,4 @@
 node_modules/
 .pi/
 .graph-sandbox-config.json
+.pi-subagents/

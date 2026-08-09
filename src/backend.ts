@@ -122,9 +122,6 @@ export class GraphitiBackend {
    * known-dead server progressively cheaper while keeping recovery bounded at
    * the cap. See docs/design/outage-resilience.md item 6. */
   private static readonly FAILURE_BACKOFF_MS = [5000, 15000, 60000, 300000];
-  /** Grace added to the probe deadline so the client's own abort (which yields a
-   * more precise error message) normally wins the race. */
-  private static readonly STATUS_DEADLINE_GRACE_MS = 500;
 
   constructor(options: GraphitiBackendOptions) {
     this.options = options;
@@ -208,64 +205,46 @@ export class GraphitiBackend {
   /**
    * Quick health check.
    *
-   * Bounded THREE ways, deliberately layered (see docs/design/outage-resilience.md):
-   *   1. the `get_status` call itself runs on the small probe budget (item 1);
-   *   2. this method races that probe against its own deadline, so no call site
-   *      can forget to bound it (item 2) - `context.ts` previously did exactly
-   *      that, defeating its own 4s search deadline;
-   *   3. results are cached: fixed TTL on success, exponential backoff on
-   *      failure, so a dead server gets cheaper over time (item 6).
+   * Bounded by ONE mechanism (see docs/design/outage-resilience.md): a single
+   * `AbortSignal.timeout(statusTimeoutMs)` passed into the client, which bounds
+   * every request the probe makes (handshake + get_status) AND cancels the
+   * in-flight socket. Earlier revisions layered a per-request timeout, a wrapper
+   * `Promise.race` deadline, a grace constant, and a provisional cache write on
+   * deadline expiry; that combination had a real defect - when the wrapper
+   * deadline won, the failure counter was deliberately left untouched and the
+   * in-flight probe was never abandoned, so the backoff could never escalate and
+   * no fresh probe was ever issued (a stuck-unavailable state that `force` could
+   * not break out of). Bounding the operation at the transport removes the race
+   * instead of patching it.
    *
-   * Concurrent callers share one in-flight probe rather than opening a socket
-   * each. `force` (used by every `/graph` subcommand) bypasses the cache and the
-   * backoff window so the user never has to wait one out.
+   * Results are cached: fixed TTL on success, exponential backoff on failure, so
+   * a dead server gets cheaper over time. Concurrent callers share one in-flight
+   * probe rather than opening a socket each - safe because the probe is now
+   * guaranteed to settle within its budget. `force` (used by every `/graph`
+   * subcommand) bypasses the cache and the backoff window.
    */
   async getStatus(force = false): Promise<GraphitiStatus> {
     const now = Date.now();
     if (!force && this.lastStatus && now - this.statusCheckedAt < this.cacheValidForMs()) {
       return this.lastStatus;
     }
-
-    const probe =
+    return (
       this.statusInFlight ??
       (this.statusInFlight = this.probeStatus().finally(() => {
         this.statusInFlight = null;
-      }));
-
-    const deadlineMs = this.statusTimeoutMs() + GraphitiBackend.STATUS_DEADLINE_GRACE_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<GraphitiStatus>((resolve) => {
-      timer = setTimeout(() => {
-        // Provisional cache write so subsequent callers short-circuit instead of
-        // opening a second probe while this one is still hanging. The failure
-        // COUNTER is intentionally untouched: the probe still owns the
-        // authoritative outcome and overwrites this entry when it settles.
-        const status: GraphitiStatus = {
-          available: false,
-          message: `Graphiti health probe exceeded ${deadlineMs}ms deadline (${this.options.url})`,
-          consecutiveFailures: this.consecutiveFailures,
-          retryAfterMs: this.failureBackoffMs(),
-        };
-        this.lastStatus = status;
-        this.statusCheckedAt = Date.now();
-        resolve(status);
-      }, deadlineMs);
-      timer.unref?.();
-    });
-
-    try {
-      return await Promise.race([probe, deadline]);
-    } finally {
-      // MUST clear: a surviving timer would later clobber a healthy cache entry
-      // with a synthetic failure.
-      if (timer) clearTimeout(timer);
-    }
+      }))
+    );
   }
 
-  /** The actual probe. Records the authoritative cache entry + breaker state. */
+  /** The actual probe. Records the cache entry + breaker state. Always settles. */
   private async probeStatus(): Promise<GraphitiStatus> {
+    const budget = this.statusTimeoutMs();
     try {
-      const res = await this.client.callTool("get_status", {}, { timeoutMs: this.statusTimeoutMs() });
+      const res = await this.client.callTool("get_status", {}, {
+        timeoutMs: budget,
+        // Hard ceiling on the whole probe, handshake included.
+        signal: AbortSignal.timeout(budget),
+      });
       const parsed = tryParseJson(res.text);
       const status: GraphitiStatus = {
         available: true,
@@ -298,6 +277,11 @@ export class GraphitiBackend {
   /**
    * Add an episode. Graphiti queues it for async extraction; the returned
    * promise resolves as soon as the server acks (typically <1s).
+   *
+   * `timeoutMs` optionally narrows the write budget AND cancels the socket on
+   * expiry (via AbortSignal), which matters for the user-visible pre-compact
+   * flush: it must not sit on the 60s default, and a cancelled request cannot
+   * later succeed behind a spooled copy of the same episode.
    */
   async addEpisode(args: {
     name: string;
@@ -305,6 +289,7 @@ export class GraphitiBackend {
     source?: "text" | "message" | "json";
     sourceDescription?: string;
     scope?: GraphScope;
+    timeoutMs?: number;
   }): Promise<McpToolCallResult> {
     return this.client.callTool("add_memory", {
       name: args.name,
@@ -312,7 +297,7 @@ export class GraphitiBackend {
       group_id: this.writeGroupId(args.scope ?? "project"),
       source: args.source ?? "text",
       ...(args.sourceDescription ? { source_description: args.sourceDescription } : {}),
-    });
+    }, callOptions(args.timeoutMs));
   }
 
   /**
@@ -326,6 +311,7 @@ export class GraphitiBackend {
     groupId: string;
     source?: "text" | "message" | "json";
     sourceDescription?: string;
+    timeoutMs?: number;
   }): Promise<McpToolCallResult> {
     return this.client.callTool("add_memory", {
       name: args.name,
@@ -333,7 +319,7 @@ export class GraphitiBackend {
       group_id: args.groupId,
       source: args.source ?? "text",
       ...(args.sourceDescription ? { source_description: args.sourceDescription } : {}),
-    });
+    }, callOptions(args.timeoutMs));
   }
 
   async searchNodes(query: string, maxNodes = 5, scope: GraphScope = "both"): Promise<GraphitiSearchHit[]> {
@@ -357,11 +343,43 @@ export class GraphitiBackend {
   }
 
   async getEpisodes(lastN = 5, scope: GraphScope = "project"): Promise<GraphitiSearchHit[]> {
-    const res = await this.client.callTool("get_episodes", {
-      group_id: this.writeGroupId(scope),
-      last_n: lastN,
-    });
-    return parseEpisodes(res.text);
+    return this.fetchEpisodes(this.writeGroupId(scope), lastN);
+  }
+
+  /**
+   * Read episodes for ONE group, tolerating both graphiti `get_episodes` arg
+   * shapes.
+   *
+   * Current servers (verified against Agent Memory v1.26.0) expose
+   * `{ group_ids: string[], max_episodes: int }`. This code previously sent the
+   * older `{ group_id, last_n }`, which FastMCP silently ignored: `group_ids`
+   * defaulted to null, the query fell through to the empty default_db graph, and
+   * EVERY episode read came back empty - `/graph` status showed no episodes and,
+   * worse, `/graph dump` produced an empty export while reporting success.
+   *
+   * We send the modern shape first (padded to >= 2 ids for graphiti #1161, same
+   * reason as search) and fall back to the legacy shape if the server rejects it.
+   */
+  private async fetchEpisodes(groupId: string, lastN: number): Promise<GraphitiSearchHit[]> {
+    try {
+      const res = await this.client.callTool("get_episodes", {
+        group_ids: this.padGroupIds([groupId]),
+        max_episodes: lastN,
+      });
+      return parseEpisodes(res.text);
+    } catch (err) {
+      // Only retry the legacy shape for an ARGUMENT rejection. Retrying on any
+      // error made a hung server pay two full budgets (up to 120s on /graph dump).
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/unexpected keyword|unknown (field|argument)|validation|invalid_?_?arguments|missing.*argument|input_?validation/i.test(msg)) {
+        throw err;
+      }
+      const res = await this.client.callTool("get_episodes", {
+        group_id: groupId,
+        last_n: lastN,
+      });
+      return parseEpisodes(res.text);
+    }
   }
 
   async clearGraph(scope: GraphScope = "project"): Promise<McpToolCallResult> {
@@ -387,21 +405,24 @@ export class GraphitiBackend {
    * the source-of-truth text the extension pushed; entities/facts are derived
    * from them, so this is the faithful export for reverting to flat files.
    *
-   * `get_episodes` takes a single group_id, so we loop. `last_n` is set high to
-   * approximate "all"; bump it if a group holds more than that.
+   * Episode reads go through fetchEpisodes, which handles both graphiti
+   * `get_episodes` arg shapes; `lastN` is set high to approximate "all".
    */
-  async dumpAllEpisodes(lastN = 10000): Promise<{ groupId: string; episodes: GraphitiSearchHit[] }[]> {
-    const out: { groupId: string; episodes: GraphitiSearchHit[] }[] = [];
+  async dumpAllEpisodes(lastN = 10000): Promise<{ groupId: string; episodes: GraphitiSearchHit[]; error?: string }[]> {
+    const out: { groupId: string; episodes: GraphitiSearchHit[]; error?: string }[] = [];
     for (const groupId of this.allGroupIds()) {
       try {
-        const res = await this.client.callTool("get_episodes", {
-          group_id: groupId,
-          last_n: lastN,
+        out.push({ groupId, episodes: await this.fetchEpisodes(groupId, lastN) });
+      } catch (err) {
+        // Record the failure ALONGSIDE the empty list. Returning a bare empty
+        // array made a failed read indistinguishable from an empty group, so
+        // `/graph dump` wrote an empty "safe to revert" export and called it
+        // success - the same hazard as the get_episodes arg-shape bug.
+        out.push({
+          groupId,
+          episodes: [],
+          error: err instanceof Error ? err.message : String(err),
         });
-        out.push({ groupId, episodes: parseEpisodes(res.text) });
-      } catch {
-        // Record the group with an empty list rather than aborting the whole dump.
-        out.push({ groupId, episodes: [] });
       }
     }
     return out;
@@ -449,6 +470,17 @@ export function computeProjectGroupId(
   const cleanName = (projectName ?? "").replace(/[^A-Za-z0-9_]/g, "");
   if (!cleanName) return null;
   return `${globalGroupId}_proj_${cleanName}`.slice(0, 64);
+}
+
+/**
+ * Per-call options for a WRITE with an explicit budget: narrow the request
+ * timeout and cancel the socket on expiry, so a caller that gives up (and spools
+ * instead) cannot have the request succeed behind its back and duplicate the
+ * episode.
+ */
+function callOptions(timeoutMs?: number) {
+  if (!timeoutMs || timeoutMs <= 0) return {};
+  return { timeoutMs, signal: AbortSignal.timeout(timeoutMs) };
 }
 
 /** Best-effort JSON parser — returns null on any error. */

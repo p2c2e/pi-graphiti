@@ -100,6 +100,48 @@ async function main() {
     console.log(`  ok: readGroupIds stays unpadded for display`);
   }
 
+  // 7. get_episodes must use the MODERN arg shape (group_ids[] + max_episodes),
+  //    padded for #1161. Sending the legacy {group_id, last_n} made FastMCP
+  //    default group_ids to null, query the empty default_db graph, and return
+  //    zero episodes for every read - including /graph dump, which then wrote an
+  //    empty "safe to revert" export while reporting success.
+  {
+    const { backend, calls } = makeBackend({ groupId: "pg", projectGroupId: "pg_proj_x", projectScoping: true });
+    await backend.getEpisodes(7, "project");
+    const call = calls.find((c) => c.name === "get_episodes");
+    assert.ok(call, "expected a get_episodes call");
+    const ids = call!.args.group_ids as string[];
+    assert.ok(Array.isArray(ids), "get_episodes must send group_ids as an array");
+    assert.ok(ids.length >= 2, `get_episodes group_ids must be padded for #1161, got ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("pg_proj_x"), "get_episodes must target the real group");
+    assert.equal(call!.args.max_episodes, 7, "get_episodes must send max_episodes");
+    assert.equal(call!.args.last_n, undefined, "legacy last_n must not be sent on the modern path");
+    passed++;
+    console.log(`  ok: get_episodes uses group_ids[]+max_episodes (padded) ${JSON.stringify(ids)}`);
+  }
+
+  // 8. Legacy-server fallback: if the modern shape is rejected, retry the old one.
+  {
+    const backend = new GraphitiBackend({
+      groupId: "pg", projectGroupId: null, projectScoping: false,
+      url: "http://localhost:0/mcp/", timeoutMs: 1000,
+    });
+    const seen: Call[] = [];
+    (backend as unknown as { client: { callTool: unknown } }).client = {
+      async callTool(name: string, args: Record<string, unknown>) {
+        seen.push({ name, args });
+        if ("group_ids" in args) throw new Error("legacy server: unexpected keyword argument 'group_ids'");
+        return { text: "[]" };
+      },
+    };
+    await backend.getEpisodes(3, "project");
+    assert.equal(seen.length, 2, "expected a modern attempt then a legacy retry");
+    assert.equal(seen[1].args.group_id, "pg", "fallback must send singular group_id");
+    assert.equal(seen[1].args.last_n, 3, "fallback must send last_n");
+    passed++;
+    console.log(`  ok: get_episodes falls back to {group_id,last_n} on older servers`);
+  }
+
   console.log(`\nPASS: ${passed} scope-padding assertions held.`);
 }
 

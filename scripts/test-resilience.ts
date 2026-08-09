@@ -136,7 +136,7 @@ async function testSelfBoundedAgainstHang() {
     }
     assert.ok(
       elapsed < 5000,
-      `getStatus must be bounded by its own deadline, took ${elapsed}ms (work timeout is ${WORK_TIMEOUT_MS}ms)`,
+      `getStatus must be bounded by its probe budget, took ${elapsed}ms (work timeout is ${WORK_TIMEOUT_MS}ms)`,
     );
     ok(`hung server: 3 concurrent getStatus resolved unavailable in ${elapsed}ms (< 5s, not 60s)`);
 
@@ -147,11 +147,39 @@ async function testSelfBoundedAgainstHang() {
     );
     ok("concurrent callers shared a single in-flight probe");
 
-    // The provisional/authoritative cache entry must be populated, so a caller
-    // arriving right after does not open another socket.
+    // REGRESSION: an earlier revision bounded getStatus with a wrapper
+    // Promise.race deadline and, when that deadline won, deliberately left the
+    // failure counter untouched AND never abandoned the in-flight probe. Against a
+    // hung server that froze the breaker at 0 forever, so the backoff never
+    // escalated and no fresh probe was ever issued. Bounding at the transport (one
+    // AbortSignal) means the probe always settles and the breaker always advances.
+    assert.equal(a.consecutiveFailures, 1, `hung server must count as a failure, got ${String(a.consecutiveFailures)}`);
+    ok("a hung probe counts toward the breaker (no frozen failure counter)");
+
+    // Escalation across the backoff windows, still against the hung server.
+    ageCache(backend, 6000);
+    const second = await backend.getStatus();
+    assert.equal(second.consecutiveFailures, 2);
+    assert.equal(second.retryAfterMs, 15000);
+    ageCache(backend, 20000);
+    const third = await backend.getStatus();
+    assert.equal(third.consecutiveFailures, 3);
+    assert.equal(third.retryAfterMs, 60000);
+    assert.ok(connections >= 3, `each escalation must issue a real probe, saw ${connections} connections`);
+    ok(`hung server escalates 1 -> 2 -> 3 with fresh probes (${connections} connections)`);
+
+    // `force` must still be able to start a new probe (it could not when the
+    // in-flight promise was pinned by a never-settling probe).
+    const before = connections;
+    await backend.getStatus(true);
+    assert.ok(connections > before, "force must issue a fresh probe against a hung server");
+    ok("force starts a new probe even while the server is hung");
+
+    // Post-settle cache: a caller arriving now hits the cached failure.
+    const cached = connections;
     await backend.getStatus();
-    assert.equal(connections, 1, "post-deadline caller must hit the cache, not re-probe");
-    ok("post-deadline caller short-circuited on the cached failure (no probe pileup)");
+    assert.equal(connections, cached, "caller inside the backoff window must not re-probe");
+    ok("cached failure short-circuits later callers (no probe pileup)");
   } finally {
     for (const s of sockets) s.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
