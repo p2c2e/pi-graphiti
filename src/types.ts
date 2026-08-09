@@ -21,8 +21,13 @@ export interface GraphitiConfig {
    * because the FalkorDB/RediSearch backend treats `-` as a NOT operator and
    * hyphenated group ids corrupt search queries. */
   groupId: string;
-  /** Per-tool-call timeout for graphiti MCP requests. Default 60000ms. */
+  /** Per-tool-call timeout for graphiti MCP requests (real work). Default 60000ms. */
   toolTimeoutMs: number;
+  /** Budget for cheap reachability probes (`get_status`). Default 3000ms.
+   * Kept far below `toolTimeoutMs` because every awaited gate in the extension
+   * pays it, and a hung server would otherwise stall a turn for the full work
+   * timeout. See docs/design/outage-resilience.md. */
+  statusTimeoutMs: number;
   /** When true, split graph memory into a per-project group + a shared global
    * group (per-project id = `<groupId>_proj_<sanitizedProjectName>`). When
    * false, every op uses the single `groupId` bucket — identical to

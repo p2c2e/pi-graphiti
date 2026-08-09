@@ -12,6 +12,7 @@
  */
 
 import { GraphitiMcpClient, McpClientError, type McpToolCallResult } from "./mcp-client.js";
+import { DEFAULT_STATUS_TIMEOUT_MS } from "./config.js";
 import type { GraphitiConfig, GraphScope } from "./types.js";
 
 export interface GraphitiStatus {
@@ -19,6 +20,10 @@ export interface GraphitiStatus {
   message: string;
   backend?: string;
   raw?: string;
+  /** Consecutive failed health probes (0 when healthy). Breaker state. */
+  consecutiveFailures?: number;
+  /** How long until the next probe is allowed, per the failure backoff. */
+  retryAfterMs?: number;
 }
 
 export interface GraphitiSearchHit {
@@ -94,8 +99,13 @@ export interface GraphitiBackendOptions {
   projectScoping: boolean;
   /** Graphiti MCP server URL. */
   url: string;
-  /** Per-tool-call timeout. */
+  /** Per-tool-call timeout for real work (writes, searches, episode reads). */
   timeoutMs: number;
+  /** Budget for cheap health probes (`get_status`). Defaults to
+   * DEFAULT_STATUS_TIMEOUT_MS. Deliberately much smaller than `timeoutMs`: a
+   * reachability check is not work, and every awaited gate in the extension
+   * pays it. See docs/design/outage-resilience.md item 1. */
+  statusTimeoutMs?: number;
 }
 
 export class GraphitiBackend {
@@ -103,7 +113,18 @@ export class GraphitiBackend {
   private readonly client: GraphitiMcpClient;
   private lastStatus: GraphitiStatus | null = null;
   private statusCheckedAt = 0;
+  private consecutiveFailures = 0;
+  private statusInFlight: Promise<GraphitiStatus> | null = null;
+  /** How long a SUCCESSFUL status is trusted. */
   private static readonly STATUS_TTL_MS = 30000;
+  /** Backoff schedule for FAILED probes, indexed by consecutive failures.
+   * A flat TTL re-probes a dead server forever at the same rate; this makes a
+   * known-dead server progressively cheaper while keeping recovery bounded at
+   * the cap. See docs/design/outage-resilience.md item 6. */
+  private static readonly FAILURE_BACKOFF_MS = [5000, 15000, 60000, 300000];
+  /** Grace added to the probe deadline so the client's own abort (which yields a
+   * more precise error message) normally wins the race. */
+  private static readonly STATUS_DEADLINE_GRACE_MS = 500;
 
   constructor(options: GraphitiBackendOptions) {
     this.options = options;
@@ -165,31 +186,111 @@ export class GraphitiBackend {
     return this.padGroupIds(this.readGroupIds(scope));
   }
 
-  /** Quick health check, cached for STATUS_TTL_MS to avoid hammering the server. */
+  /** Probe budget for `get_status` (item 1). */
+  private statusTimeoutMs(): number {
+    const v = this.options.statusTimeoutMs;
+    return typeof v === "number" && v > 0 ? v : DEFAULT_STATUS_TIMEOUT_MS;
+  }
+
+  /** Current backoff delay for the failure streak (item 6). */
+  private failureBackoffMs(): number {
+    const schedule = GraphitiBackend.FAILURE_BACKOFF_MS;
+    const idx = Math.min(Math.max(this.consecutiveFailures, 1), schedule.length) - 1;
+    return schedule[idx];
+  }
+
+  /** How long the cached status is trusted: fixed TTL on success, backoff on failure. */
+  private cacheValidForMs(): number {
+    if (this.lastStatus && this.lastStatus.available === false) return this.failureBackoffMs();
+    return GraphitiBackend.STATUS_TTL_MS;
+  }
+
+  /**
+   * Quick health check.
+   *
+   * Bounded THREE ways, deliberately layered (see docs/design/outage-resilience.md):
+   *   1. the `get_status` call itself runs on the small probe budget (item 1);
+   *   2. this method races that probe against its own deadline, so no call site
+   *      can forget to bound it (item 2) - `context.ts` previously did exactly
+   *      that, defeating its own 4s search deadline;
+   *   3. results are cached: fixed TTL on success, exponential backoff on
+   *      failure, so a dead server gets cheaper over time (item 6).
+   *
+   * Concurrent callers share one in-flight probe rather than opening a socket
+   * each. `force` (used by every `/graph` subcommand) bypasses the cache and the
+   * backoff window so the user never has to wait one out.
+   */
   async getStatus(force = false): Promise<GraphitiStatus> {
     const now = Date.now();
-    if (!force && this.lastStatus && now - this.statusCheckedAt < GraphitiBackend.STATUS_TTL_MS) {
+    if (!force && this.lastStatus && now - this.statusCheckedAt < this.cacheValidForMs()) {
       return this.lastStatus;
     }
+
+    const probe =
+      this.statusInFlight ??
+      (this.statusInFlight = this.probeStatus().finally(() => {
+        this.statusInFlight = null;
+      }));
+
+    const deadlineMs = this.statusTimeoutMs() + GraphitiBackend.STATUS_DEADLINE_GRACE_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<GraphitiStatus>((resolve) => {
+      timer = setTimeout(() => {
+        // Provisional cache write so subsequent callers short-circuit instead of
+        // opening a second probe while this one is still hanging. The failure
+        // COUNTER is intentionally untouched: the probe still owns the
+        // authoritative outcome and overwrites this entry when it settles.
+        const status: GraphitiStatus = {
+          available: false,
+          message: `Graphiti health probe exceeded ${deadlineMs}ms deadline (${this.options.url})`,
+          consecutiveFailures: this.consecutiveFailures,
+          retryAfterMs: this.failureBackoffMs(),
+        };
+        this.lastStatus = status;
+        this.statusCheckedAt = Date.now();
+        resolve(status);
+      }, deadlineMs);
+      timer.unref?.();
+    });
+
     try {
-      const res = await this.client.callTool("get_status", {});
+      return await Promise.race([probe, deadline]);
+    } finally {
+      // MUST clear: a surviving timer would later clobber a healthy cache entry
+      // with a synthetic failure.
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** The actual probe. Records the authoritative cache entry + breaker state. */
+  private async probeStatus(): Promise<GraphitiStatus> {
+    try {
+      const res = await this.client.callTool("get_status", {}, { timeoutMs: this.statusTimeoutMs() });
       const parsed = tryParseJson(res.text);
       const status: GraphitiStatus = {
         available: true,
         message: typeof parsed?.status === "string" ? parsed.status : "ok",
         backend: typeof parsed?.message === "string" ? parsed.message : undefined,
         raw: res.text,
+        consecutiveFailures: 0,
       };
+      this.consecutiveFailures = 0;
       this.lastStatus = status;
-      this.statusCheckedAt = now;
+      this.statusCheckedAt = Date.now();
       return status;
     } catch (err) {
+      this.consecutiveFailures++;
+      // Drop the session so a server that restarted gets a fresh `initialize`
+      // on the next attempt instead of replaying a session it has forgotten.
+      this.client.reset();
       const status: GraphitiStatus = {
         available: false,
         message: err instanceof McpClientError ? err.message : String(err),
+        consecutiveFailures: this.consecutiveFailures,
+        retryAfterMs: this.failureBackoffMs(),
       };
       this.lastStatus = status;
-      this.statusCheckedAt = now;
+      this.statusCheckedAt = Date.now();
       return status;
     }
   }
@@ -329,6 +430,7 @@ export function buildGraphitiBackend(
     projectGroupId,
     projectScoping,
     timeoutMs: config.toolTimeoutMs ?? 60000,
+    statusTimeoutMs: config.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS,
   });
 }
 

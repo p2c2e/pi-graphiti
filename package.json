@@ -1,6 +1,6 @@
 {
   "name": "pi-graphiti",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "🕸️ Persistent knowledge graph for Pi via Graphiti MCP. Ambient recall, automatic episode writes on session events, /graph command.",
   "type": "module",
   "main": "src/index.ts",
@@ -22,9 +22,10 @@
     "preuninstall": "node scripts/preuninstall.mjs",
     "ingest": "npx tsx scripts/ingest-file.ts",
     "test:scope": "npx tsx scripts/test-scope.ts",
+    "test:resilience": "npx tsx scripts/test-resilience.ts",
     "smoke": "bash scripts/smoke.sh",
     "smoke:uninstall": "bash scripts/smoke-uninstall.sh",
-    "test": "npm run check && npm run test:scope && npm run smoke:uninstall && npm run smoke",
+    "test": "npm run check && npm run test:scope && npm run test:resilience && npm run smoke:uninstall && npm run smoke",
     "prepublishOnly": "npm run check"
   },
   "keywords": [

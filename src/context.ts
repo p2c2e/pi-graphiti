@@ -7,8 +7,12 @@
  * <graphiti-context> so the agent can use it without confusing it with the
  * user's current ask.
  *
- * Cheap-fail: we never block agent start. If graphiti is unreachable or slow,
- * we return an empty string.
+ * Cheap-fail: we never block agent start. The reachability probe is bounded by
+ * GraphitiBackend.getStatus itself (small probe budget + internal deadline, see
+ * docs/design/outage-resilience.md items 1-2); the searches are bounded here by
+ * SEARCH_DEADLINE_MS. Previously only the searches were bounded, so a hung
+ * server could stall session start for the full 60s work timeout despite the 4s
+ * deadline below.
  */
 
 import type { GraphitiBackend, GraphitiSearchHit } from "./backend.js";
@@ -25,6 +29,7 @@ export async function buildGraphitiInjection(
   const query = (latestUserMessage ?? "").trim().slice(0, MAX_QUERY_CHARS);
   if (!query) return "";
 
+  // Bounded internally (probe budget + deadline + failure backoff).
   const status = await backend.getStatus();
   if (!status.available) return "";
 

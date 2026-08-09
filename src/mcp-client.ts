@@ -21,6 +21,13 @@ export interface McpClientOptions {
   timeoutMs?: number;
 }
 
+/** Per-call overrides. `timeoutMs` narrows (or widens) the client default for a
+ * single request — used to give cheap health probes a small budget while real
+ * writes/searches keep a generous one. See docs/design/outage-resilience.md. */
+export interface McpCallOptions {
+  timeoutMs?: number;
+}
+
 export interface McpToolCallResult {
   /** Concatenated `text` blocks from `result.content[]`. Empty string if no text blocks. */
   text: string;
@@ -47,11 +54,21 @@ export class GraphitiMcpClient {
     this.timeoutMs = opts.timeoutMs ?? 60000;
   }
 
-  /** Lazy initialize. Safe to call repeatedly — only runs once. */
-  async ensureInitialized(): Promise<void> {
+  /**
+   * Lazy initialize. Safe to call repeatedly — only runs once.
+   *
+   * `timeoutMs` bounds the handshake requests. This matters for probes: a COLD
+   * client talking to a hung server spends the entire hang inside `initialize`,
+   * so a 3s probe would still block for the 60s client default without it.
+   *
+   * Note: when an init is already in flight, later callers await the existing
+   * promise and therefore inherit the FIRST caller's budget. Acceptable — a
+   * failed init clears `initPromise`, so the next call retries with its own.
+   */
+  async ensureInitialized(timeoutMs?: number): Promise<void> {
     if (this.sessionId) return;
     if (!this.initPromise) {
-      this.initPromise = this.doInitialize().catch((err) => {
+      this.initPromise = this.doInitialize(timeoutMs).catch((err) => {
         this.initPromise = null; // allow retry next call
         throw err;
       });
@@ -65,7 +82,7 @@ export class GraphitiMcpClient {
     this.initPromise = null;
   }
 
-  private async doInitialize(): Promise<void> {
+  private async doInitialize(timeoutMs?: number): Promise<void> {
     const id = this.nextId++;
     const body = {
       jsonrpc: "2.0",
@@ -78,7 +95,7 @@ export class GraphitiMcpClient {
       },
     };
 
-    const { response, text } = await this.post(body, /*requireSession*/ false);
+    const { response, text } = await this.post(body, /*requireSession*/ false, timeoutMs);
 
     const sid = response.headers.get("mcp-session-id");
     if (!sid) {
@@ -100,6 +117,7 @@ export class GraphitiMcpClient {
       await this.post(
         { jsonrpc: "2.0", method: "notifications/initialized" },
         /*requireSession*/ true,
+        timeoutMs,
       );
     } catch {
       // Some servers don't reply; that's fine.
@@ -109,9 +127,19 @@ export class GraphitiMcpClient {
   /**
    * Call a tool. Returns concatenated text blocks plus the raw result object.
    * Throws McpClientError on JSON-RPC error or transport failure.
+   *
+   * `opts.timeoutMs` overrides the client default for this call (and for the
+   * lazy handshake it may trigger). Budget is PER HTTP REQUEST, so a call on a
+   * cold client can consume up to 2x it (initialize + the call); callers that
+   * need a hard ceiling on the logical operation must impose their own deadline
+   * (GraphitiBackend.getStatus does exactly that).
    */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolCallResult> {
-    await this.ensureInitialized();
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    opts: McpCallOptions = {},
+  ): Promise<McpToolCallResult> {
+    await this.ensureInitialized(opts.timeoutMs);
     const id = this.nextId++;
     const body = {
       jsonrpc: "2.0",
@@ -120,7 +148,7 @@ export class GraphitiMcpClient {
       params: { name, arguments: args },
     };
 
-    const { text } = await this.post(body, /*requireSession*/ true);
+    const { text } = await this.post(body, /*requireSession*/ true, opts.timeoutMs);
     const parsed = parseSseJsonRpc(text, id);
     if (parsed.error) {
       throw new McpClientError(`tools/call '${name}' failed: ${parsed.error}`);
@@ -134,6 +162,7 @@ export class GraphitiMcpClient {
   private async post(
     body: unknown,
     requireSession: boolean,
+    timeoutMs?: number,
   ): Promise<{ response: Response; text: string }> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -144,8 +173,9 @@ export class GraphitiMcpClient {
       headers["Mcp-Session-Id"] = this.sessionId;
     }
 
+    const budgetMs = timeoutMs && timeoutMs > 0 ? timeoutMs : this.timeoutMs;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs).unref?.();
+    const timer = setTimeout(() => controller.abort(), budgetMs).unref?.();
     try {
       const response = await fetch(this.url, {
         method: "POST",
@@ -162,7 +192,7 @@ export class GraphitiMcpClient {
       return { response, text };
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        throw new McpClientError(`Request to ${this.url} timed out after ${this.timeoutMs}ms`);
+        throw new McpClientError(`Request to ${this.url} timed out after ${budgetMs}ms`);
       }
       if (err instanceof McpClientError) throw err;
       throw new McpClientError(`fetch ${this.url} failed: ${(err as Error).message}`, err);

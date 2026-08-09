@@ -4,7 +4,7 @@
 
 ## What it gives you
 
-The Graphiti MCP server is just an MCP — if you `pi mcp add` it, the LLM gets `add_memory`, `search_nodes`, etc. as raw tools. This extension wraps that surface to give you behavior an MCP cannot provide:
+This extension wraps Graphiti MCP server. The MCP server provides `add_memory`, `search_nodes`, etc. as raw tools. 
 
 - **`graph` tool** — single pi-native tool with three actions (`add` / `search` / `episodes`) so you don't need pi-mcp-adapter to use graphiti.
 - **Automatic episode writes** — pushes a snapshot every N user turns, before context compaction, and on session shutdown. No need for the model to remember to write.
@@ -34,7 +34,7 @@ pi install git:github.com/p2c2e/pi-graphiti@v0.4.0
 
 ## Configure
 
-Configuration is optional — defaults work against a local graphiti server.
+Configuration is optional — defaults work against a local graphiti server. You can run ```/graph setup``` to configure to your liking.
 
 **Config file:** `~/.pi/agent/pi-graphiti-config.json`
 
@@ -70,7 +70,8 @@ Configuration is optional — defaults work against a local graphiti server.
 | `PI_GRAPHITI_FLUSH_ON_COMPACT`  | `true`                        | Push snapshot before compaction. |
 | `PI_GRAPHITI_FLUSH_ON_SHUTDOWN` | `true`                        | Push snapshot on shutdown. |
 | `PI_GRAPHITI_FLUSH_MIN_TURNS`   | `6`                           | Minimum user turns before flush triggers. |
-| `PI_GRAPHITI_TIMEOUT_MS`        | `60000`                       | Per-tool-call timeout. |
+| `PI_GRAPHITI_TIMEOUT_MS`        | `60000`                       | Per-call timeout for real work (writes, searches, episode reads). |
+| `PI_GRAPHITI_STATUS_TIMEOUT_MS` | `3000`                        | Budget for cheap reachability probes (`get_status`). Bounds how long a hung server can delay a turn. See [outage resilience](docs/design/outage-resilience.md). |
 
 ## Usage
 
@@ -88,6 +89,26 @@ The `graph` tool is exposed to the LLM automatically. From the user side:
 ```
 
 > **Uninstalling:** run `/graph uninstall` (alias `/graph teardown`) *before* `pi remove`. It stops the local Docker stack only when the setup wizard started it (config `startedBySetup`); a pre-existing or external stack is left running with a message. `pi remove` itself only edits settings and cannot run teardown. A best-effort `preuninstall` npm script does the same cleanup for plain `npm uninstall`.
+
+### When the MCP server is down
+
+Graphiti is an optional accelerator, never a blocker: every path catches failures
+and the agent keeps working. Cost of an outage:
+
+- **Server stopped / port closed** (the common case): connections are refused in
+  ~1ms. No measurable impact.
+- **Server hung / black-holed** (paused container, VPN drop, wedged FalkorDB):
+  reachability probes are capped at `PI_GRAPHITI_STATUS_TIMEOUT_MS` (3s) rather
+  than the 60s work timeout, `getStatus()` enforces that deadline internally so
+  no call site can forget it, and concurrent callers share one probe.
+- **Sustained outage**: failed probes back off 5s -> 15s -> 60s -> 300s (cap),
+  so a dead server costs ~12 probes/hour instead of 120. A success resets the
+  breaker immediately, and every `/graph` subcommand force-probes so you never
+  wait out a backoff window.
+
+Full analysis, per-path blocking table, and the remaining tracked work (write
+spooling, outage notification) are in
+[docs/design/outage-resilience.md](docs/design/outage-resilience.md).
 
 ### Scope (when `projectScoping` is enabled)
 

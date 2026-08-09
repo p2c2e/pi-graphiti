@@ -17,6 +17,9 @@ import type { GraphitiConfig } from "./types.js";
 
 export const DEFAULT_URL = "http://localhost:8000/mcp/";
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
+/** Health-probe budget. Small on purpose: a probe is not work, and every awaited
+ * gate pays it. See docs/design/outage-resilience.md. */
+export const DEFAULT_STATUS_TIMEOUT_MS = 3000;
 export const DEFAULT_NUDGE_INTERVAL = 10;
 export const DEFAULT_FLUSH_MIN_TURNS = 6;
 
@@ -81,6 +84,10 @@ export function loadConfig(): GraphitiConfig {
     toolTimeoutMs: envInt(
       "PI_GRAPHITI_TIMEOUT_MS",
       pick<number>(file.toolTimeoutMs, DEFAULT_TOOL_TIMEOUT_MS),
+    ),
+    statusTimeoutMs: envInt(
+      "PI_GRAPHITI_STATUS_TIMEOUT_MS",
+      pick<number>(file.statusTimeoutMs, DEFAULT_STATUS_TIMEOUT_MS),
     ),
     projectScoping: envBool(
       "PI_GRAPHITI_PROJECT_SCOPING",
