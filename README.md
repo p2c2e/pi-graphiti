@@ -25,12 +25,18 @@ Default URL the extension expects: `http://localhost:8000/mcp/` (Graphiti's defa
 ## Install
 
 ```bash
-# from npm (once published)
+# recommended: from npm, tracks new releases via `pi update --extensions`
 pi install npm:pi-graphiti
 
-# or pinned from git
-pi install git:github.com/p2c2e/pi-graphiti@v0.4.0
+# or from git (latest on the default branch)
+pi install git:github.com/p2c2e/pi-graphiti
 ```
+
+> **Pinning:** adding a version freezes the install and pi will NOT move it for you -
+> neither `npm:pi-graphiti@<version>` nor `git:...@<tag>` is advanced by
+> `pi update --extensions` / `pi update --all`. Pin only when you want that, and re-run
+> `pi install` with the new `@<tag>` to move a pinned install forward. See the
+> [releases](https://github.com/p2c2e/pi-graphiti/releases) for available tags.
 
 ## Configure
 
